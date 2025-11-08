@@ -276,6 +276,8 @@ const verifySoloProjectAccess = async (projectId, userId) => {
 };
 
 // ===== DASHBOARD CONTROLLERS =====
+// BACKEND FIX: controllers/soloProjectController.js
+// Replace the getDashboardData function with this improved version
 
 const getDashboardData = async (req, res) => {
   try {
@@ -337,99 +339,127 @@ const getDashboardData = async (req, res) => {
         `)
         .eq('project_id', projectId),
 
-      // Fetch ALL tasks at once
-      supabase
-        .from('project_tasks')
-        .select('*')
-        .eq('project_id', projectId)
-        .order('created_at', { ascending: false }),
-
-      // Fetch ALL goals at once
+      // Fetch tasks
       supabase
         .from('solo_project_goals')
         .select('*')
         .eq('project_id', projectId)
+        .eq('type', 'task')
         .order('created_at', { ascending: false }),
 
-      // Fetch recent activities
+      // Fetch goals
+      supabase
+        .from('solo_project_goals')
+        .select('*')
+        .eq('project_id', projectId)
+        .eq('type', 'goal')
+        .order('created_at', { ascending: false }),
+
+      // Fetch activities
       supabase
         .from('user_activity')
         .select('*')
         .eq('project_id', projectId)
         .eq('user_id', userId)
         .order('created_at', { ascending: false })
-        .limit(20)
+        .limit(10)
     ]);
-
-    console.log(`✅ All data fetched in ${Date.now() - startTime}ms`);
 
     // Handle errors
     if (projectResult.error) {
       console.error('Error fetching project:', projectResult.error);
       return res.status(500).json({
         success: false,
-        message: 'Failed to fetch project data'
+        message: 'Failed to fetch project information'
       });
     }
 
     const project = projectResult.data;
-    const languages = languagesResult.data || [];
-    const topics = topicsResult.data || [];
+    const projectLanguages = languagesResult.data || [];
+    const projectTopics = topicsResult.data || [];
     const allTasks = tasksResult.data || [];
     const allGoals = goalsResult.data || [];
     const activities = activitiesResult.data || [];
 
-    // ✅ OPTIMIZATION: Process data in memory (much faster than separate queries)
-    const processingStart = Date.now();
+    // ✅ CRITICAL FIX: Ensure programming language is properly set
+    project.programming_languages = projectLanguages;
+    project.topics = projectTopics;
 
-    // Enhance project with languages and topics
-    project.programming_languages = languages;
-    project.topics = topics;
+    console.log('📝 Project languages found:', projectLanguages.length);
+    
+    // Find primary language or use first available
+    const primaryLanguage = projectLanguages.find(pl => pl.is_primary);
+    const languageToUse = primaryLanguage || projectLanguages[0];
 
-    // Calculate task statistics
+    if (languageToUse && languageToUse.programming_languages) {
+      project.programming_language_id = languageToUse.programming_languages.id;
+      project.programming_language = languageToUse.programming_languages;
+      console.log('✅ Programming language set:', {
+        id: project.programming_language_id,
+        name: project.programming_language?.name
+      });
+    } else {
+      console.warn('⚠️ WARNING: No programming language found for project:', projectId);
+      // ✅ ADD: Set a flag to indicate missing language
+      project.missing_language = true;
+    }
+
+    // Calculate statistics
     const completedTasks = allTasks.filter(t => t.status === 'completed');
     const inProgressTasks = allTasks.filter(t => t.status === 'in_progress');
-    const todoTasks = allTasks.filter(t => t.status === 'todo');
-
-    // Calculate goal statistics
     const completedGoals = allGoals.filter(g => g.status === 'completed');
-    const activeGoals = allGoals.filter(g => g.status === 'active');
+    const activeGoals = allGoals.filter(g => g.status !== 'completed');
 
-    // Calculate time tracking
+    // Time tracking
     const today = new Date();
     today.setHours(0, 0, 0, 0);
     
-    const todayActivities = activities.filter(a => {
-      const activityDate = new Date(a.created_at);
-      activityDate.setHours(0, 0, 0, 0);
-      return activityDate.getTime() === today.getTime();
-    });
+    const { data: todayActivities } = await supabase
+      .from('user_activity')
+      .select('*')
+      .eq('project_id', projectId)
+      .eq('user_id', userId)
+      .gte('created_at', today.toISOString());
 
-    const timeSpentToday = todayActivities.reduce((sum, activity) => {
-      return sum + (activity.activity_data?.duration_minutes || 0);
-    }, 0);
+    const timeSpentToday = todayActivities?.reduce((sum, act) => {
+      return sum + (act.activity_data?.time_spent_minutes || 0);
+    }, 0) || 0;
 
-    // Calculate streak (simplified - count consecutive days with activity)
+    // Streak calculation
+    const { data: allUserActivities } = await supabase
+      .from('user_activity')
+      .select('created_at')
+      .eq('project_id', projectId)
+      .eq('user_id', userId)
+      .order('created_at', { ascending: false });
+
     let streakDays = 0;
-    const activityDates = new Set(
-      activities.map(a => {
-        const date = new Date(a.created_at);
-        return date.toISOString().split('T')[0];
-      })
-    );
-
-    let currentDate = new Date();
-    while (true) {
-      const dateStr = currentDate.toISOString().split('T')[0];
-      if (activityDates.has(dateStr)) {
-        streakDays++;
-        currentDate.setDate(currentDate.getDate() - 1);
-      } else {
-        break;
+    if (allUserActivities && allUserActivities.length > 0) {
+      const dates = new Set();
+      allUserActivities.forEach(act => {
+        const date = new Date(act.created_at).toDateString();
+        dates.add(date);
+      });
+      
+      const sortedDates = Array.from(dates).sort((a, b) => 
+        new Date(b).getTime() - new Date(a).getTime()
+      );
+      
+      let checkDate = new Date();
+      checkDate.setHours(0, 0, 0, 0);
+      
+      for (const dateStr of sortedDates) {
+        const actDate = new Date(dateStr);
+        actDate.setHours(0, 0, 0, 0);
+        
+        if (actDate.getTime() === checkDate.getTime()) {
+          streakDays++;
+          checkDate.setDate(checkDate.getDate() - 1);
+        } else if (actDate.getTime() < checkDate.getTime()) {
+          break;
+        }
       }
     }
-
-    console.log(`✅ Data processed in ${Date.now() - processingStart}ms`);
 
     const dashboardData = {
       project,
@@ -438,11 +468,14 @@ const getDashboardData = async (req, res) => {
         totalTasks: allTasks.length,
         completedTasks: completedTasks.length,
         inProgressTasks: inProgressTasks.length,
-        todoTasks: todoTasks.length,
         
         totalGoals: allGoals.length,
         completedGoals: completedGoals.length,
         activeGoals: activeGoals.length,
+        
+        completionRate: (allTasks.length + allGoals.length) > 0
+          ? Math.round(((completedTasks.length + completedGoals.length) / (allTasks.length + allGoals.length)) * 100)
+          : 0,
         
         taskCompletionRate: allTasks.length > 0
           ? Math.round((completedTasks.length / allTasks.length) * 100)

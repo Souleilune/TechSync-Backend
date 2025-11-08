@@ -1,8 +1,8 @@
-// backend/routes/notifications.js
+// backend/routes/notifications.js - FIXED VERSION
 const express = require('express');
 const router = express.Router();
 const notificationsController = require('../controllers/notificationsController');
-const authMiddleware = require('../middleware/auth');
+const authMiddleware = require('../middleware/auth'); // Import the default export
 
 // Apply authentication to all routes
 router.use(authMiddleware);
@@ -16,7 +16,4 @@ router.put('/read', notificationsController.markNotificationsRead);
 // Get unread count
 router.get('/unread-count', notificationsController.getUnreadCount);
 
-// Delete a notification
-router.delete('/:notificationId', notificationsController.deleteNotification);
-
-module.exports = router;
+module.exports = router;        
