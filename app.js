@@ -280,6 +280,15 @@ io.on('connection', (socket) => {
 
 // Make io available to routes
 app.set('io', io);
-
+try {
+  const setupSocketHandlers = require('./utils/socketHandler');
+  if (typeof setupSocketHandlers === 'function') {
+    setupSocketHandlers(io);
+  } else {
+    console.log('⚠️  Socket handler not properly exported');
+  }
+} catch (error) {
+  console.error('❌ Failed to setup socket handlers:', error.message);
+}
 // Export both app and server
 module.exports = { app, server };
