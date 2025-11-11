@@ -257,6 +257,48 @@ const register = async (req, res) => {
   }
 };
 
+// Check if username is available (for real-time validation)
+const checkUsernameAvailability = async (req, res) => {
+  try {
+    const { username } = req.query;
+
+    if (!username) {
+      return res.status(400).json({
+        success: false,
+        message: 'Username is required'
+      });
+    }
+
+    // Check if username exists
+    const { data: existingUser } = await supabase
+      .from('users')
+      .select('id')
+      .eq('username', username.trim())
+      .single();
+
+    if (existingUser) {
+      return res.json({
+        success: true,
+        available: false,
+        message: 'Username already in used'
+      });
+    }
+
+    return res.json({
+      success: true,
+      available: true,
+      message: 'Username is available'
+    });
+
+  } catch (error) {
+    console.error('Check username availability error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to check username availability'
+    });
+  }
+};
+
 // Login user
 const login = async (req, res) => {
   try {
@@ -796,5 +838,6 @@ module.exports = {
   changePassword,
   logout,
   requestPasswordReset,
-  resetPassword  
+  resetPassword,
+  checkUsernameAvailability
 };

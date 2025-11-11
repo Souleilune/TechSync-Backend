@@ -5,6 +5,9 @@ const { body, validationResult } = require('express-validator');
 const authController = require('../controllers/authController');
 const authMiddleware = require('../middleware/auth');
 
+// Check username availability
+router.get('/check-username', authController.checkUsernameAvailability);
+
 // Validation middleware
 const handleValidationErrors = (req, res, next) => {
   const errors = validationResult(req);
