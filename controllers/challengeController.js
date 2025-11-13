@@ -660,7 +660,6 @@ const submitSimpleChallenge = async (req, res) => {
         status: status,
         feedback: feedback,
         submitted_at: new Date(),
-        completed_at: new Date(),
         notes: notes || null
       })
       .select()
