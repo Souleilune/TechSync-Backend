@@ -530,7 +530,7 @@ const getAttemptDetails = async (req, res) => {
 // Submit simple challenge (for solo projects weekly challenges)
 const submitSimpleChallenge = async (req, res) => {
   try {
-    const { challenge_id, submitted_code, notes, language, project_id } = req.body;
+    const { challenge_id, submitted_code, language, project_id } = req.body;
     const userId = req.user.id;
 
     console.log('📝 Simple challenge submission (Language-Based Evaluation):', {
@@ -660,7 +660,6 @@ const submitSimpleChallenge = async (req, res) => {
         status: status,
         feedback: feedback,
         submitted_at: new Date(),
-        notes: notes || null
       })
       .select()
       .single();
