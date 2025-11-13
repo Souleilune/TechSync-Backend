@@ -359,14 +359,6 @@ const submitChallengeAttempt = async (req, res) => {
       codeLength: submittedCode?.length
     });
 
-    // Validate input
-    if (!submittedCode || submittedCode.trim().length < 10) {
-      return res.status(400).json({
-        success: false,
-        message: 'Code submission is too short. Please provide a more complete solution.'
-      });
-    }
-
     // Get project with languages
     const { data: project, error: projectError } = await supabase
       .from('projects')
@@ -381,72 +373,60 @@ const submitChallengeAttempt = async (req, res) => {
       .eq('id', projectId)
       .single();
 
-    if (projectError || !project) {
-      console.error('Project fetch error:', projectError);
+    if (!project) {
       return res.status(404).json({ success: false, message: 'Project not found' });
     }
 
     // Get the challenge details if available
     let challenge = null;
-    
+    let evaluation = null;
+
     if (challengeId && !challengeId.startsWith('temp_')) {
-      const { data: challengeData, error: challengeError } = await supabase
+      const { data: challengeData } = await supabase
         .from('coding_challenges')
         .select('*, programming_languages(id, name)')
         .eq('id', challengeId)
         .single();
       
-      if (challengeError) {
-        console.error('Challenge fetch error:', challengeError);
-      } else {
-        challenge = challengeData;
-        console.log('✅ Challenge found:', {
-          id: challenge.id,
-          title: challenge.title,
-          language: challenge.programming_languages?.name
-        });
-      }
+      challenge = challengeData;
+      console.log('✅ Challenge found:', {
+        id: challenge.id,
+        title: challenge.title,
+        language: challenge.programming_languages?.name
+      });
     }
 
     let finalScore = 0;
     let feedback = '';
     let passed = false;
-    let evaluation = null;
 
-    // ✅ FIXED: Wrapped evaluation in try-catch with proper fallback
+    // USE NEW LANGUAGE-BASED EVALUATION
     console.log('🔧 Running language-based code evaluation...');
     
     try {
-      // Call evaluateCodeWithLanguageFeatures with proper error handling
       const evaluationResult = await evaluateCodeWithLanguageFeatures(
         submittedCode, 
         challenge, 
         project
       );
 
-      // Check if evaluation was successful
-      if (evaluationResult && typeof evaluationResult.score === 'number') {
-        finalScore = evaluationResult.score;
-        feedback = evaluationResult.feedback;
-        passed = evaluationResult.passed;
+      finalScore = evaluationResult.score;
+      feedback = evaluationResult.feedback;
+      passed = evaluationResult.passed;
 
-        evaluation = {
-          score: finalScore,
-          feedback: feedback,
-          details: evaluationResult.details,
-          usedLanguageFeatures: true,
-          languageName: evaluationResult.details?.languageName || 'Unknown'
-        };
+      evaluation = {
+        score: finalScore,
+        feedback: feedback,
+        details: evaluationResult.details,
+        usedLanguageFeatures: true,
+        languageName: evaluationResult.details?.languageName || 'Unknown'
+      };
 
-        console.log('✅ Language-based evaluation complete:', {
-          score: finalScore,
-          passed: passed,
-          foundFeatures: evaluationResult.details?.foundFeatures?.length || 0
-        });
-      } else {
-        // Evaluation returned invalid result, use fallback
-        throw new Error('Invalid evaluation result');
-      }
+      console.log('✅ Language-based evaluation complete:', {
+        score: finalScore,
+        passed: passed,
+        foundFeatures: evaluationResult.details?.foundFeatures?.length || 0
+      });
 
     } catch (evaluationError) {
       console.error('❌ Language-based evaluation failed:', evaluationError);
@@ -467,7 +447,7 @@ const submitChallengeAttempt = async (req, res) => {
       };
     }
 
-    // ✅ Create attempt record with proper error handling
+    // Create attempt record
     const { data: attempt, error: attemptError } = await supabase
       .from('challenge_attempts')
       .insert({
@@ -477,8 +457,7 @@ const submitChallengeAttempt = async (req, res) => {
         submitted_code: submittedCode,
         score: finalScore,
         status: passed ? 'passed' : 'failed',
-        started_at: startedAt || new Date().toISOString(),
-        submitted_at: new Date().toISOString(),
+        submitted_at: startedAt ? new Date(startedAt) : new Date(),
         feedback: feedback
       })
       .select()
@@ -488,93 +467,112 @@ const submitChallengeAttempt = async (req, res) => {
       console.error('Error creating attempt:', attemptError);
       return res.status(500).json({ 
         success: false, 
-        message: 'Failed to record attempt',
+        message: 'Failed to save attempt', 
         error: attemptError.message 
       });
     }
 
-    console.log('✅ Attempt record created:', {
+    console.log('✅ Attempt saved:', {
       attemptId: attempt.id,
-      score: finalScore,
-      passed: passed,
-      status: attempt.status
+      status: attempt.status,
+      score: attempt.score
     });
 
-    // If passed, add user to project
-    let projectJoined = false;
-    let membershipData = null;
+    // Update skill ratings if passed
+    if (passed && challenge && challenge.programming_language_id) {
+      try {
+        await updateSkillRatings(
+          userId,
+          challenge.programming_language_id,
+          true, // passed
+          challenge.difficulty_level
+        );
+        console.log('✅ Skill rating updated');
+      } catch (skillError) {
+        console.error('⚠️ Failed to update skill rating:', skillError);
+        // Don't fail the whole request if skill rating update fails
+      }
+    }
 
+    // If passed, add user to project
     if (passed) {
-      const { data: newMember, error: memberError } = await supabase
+      const { error: memberError } = await supabase
         .from('project_members')
         .insert({
           project_id: projectId,
           user_id: userId,
           role: 'member',
-          joined_at: new Date().toISOString()
-        })
-        .select()
-        .single();
+          status: 'active',
+          joined_at: new Date(),
+          contribution_score: finalScore
+        });
 
-      if (!memberError && newMember) {
-        projectJoined = true;
-        membershipData = newMember;
-
-        // Update project member count
-        await supabase
-          .from('projects')
-          .update({
-            current_members: (project.current_members || 0) + 1
-          })
-          .eq('id', projectId);
-
-        console.log('🎉 User successfully joined project!');
-      }
-    }
-
-    // Update skill ratings (non-blocking)
-    try {
-      if (challengeId && !challengeId.startsWith('temp_')) {
-        const plId = project.project_languages?.find(pl => pl.is_primary)?.language_id ||
-                     project.project_languages?.[0]?.language_id ||
-                     null;
-
-        if (plId) {
-          await updateSkillRatings(userId, plId, challengeId, passed);
-          console.log('✅ Skill ratings updated');
+      if (memberError) {
+        // Check if already a member
+        if (memberError.code === '23505') {
+          console.log('ℹ️ User is already a project member');
+        } else {
+          console.error('Error adding member:', memberError);
+          return res.status(500).json({ 
+            success: false, 
+            message: 'Challenge passed but failed to add you as member', 
+            error: memberError.message 
+          });
         }
+      } else {
+        // Update project member count
+        await supabase.rpc('increment_project_members', { project_id: projectId });
+        console.log('✅ User added to project');
       }
-    } catch (e) {
-      console.warn('Rating update failed (non-blocking):', e.message);
+
+      return res.json({
+        success: true,
+        passed: true,
+        message: `Congratulations! You've been added to ${project.title}!`,
+        attempt: {
+          id: attempt.id,
+          score: finalScore,
+          feedback: feedback,
+          status: 'passed'
+        },
+        evaluation,
+        redirect: `/projects/${projectId}`
+      });
     }
 
-    // ✅ FIXED: Always return success response (even on failure)
+    // Failed attempt
+    const failedAttemptsCount = await getFailedAttemptsCount(userId, projectId);
+    
+    let comfortingMessage = null;
+    if (failedAttemptsCount >= 7) {
+      comfortingMessage = generateComfortingMessage(failedAttemptsCount, project.title);
+    }
+
     return res.json({
-      success: true,
-      data: {
-        attempt,
+      success: false,
+      passed: false,
+      message: 'Challenge not passed. Keep trying!',
+      attempt: {
+        id: attempt.id,
         score: finalScore,
-        passed,
-        projectJoined,
-        feedback,
-        membership: membershipData,
-        status: passed ? 'passed' : 'failed',
-        evaluation
-      }
+        feedback: feedback,
+        status: 'failed'
+      },
+      evaluation,
+      failedAttempts: failedAttemptsCount,
+      comfortingMessage
     });
 
   } catch (error) {
     console.error('❌ Error in submitChallengeAttempt:', error);
-    
-    // ✅ CRITICAL FIX: Always return 200 with success: true
-    // This prevents CORS-like errors from unhandled exceptions
-    return res.status(200).json({ 
+    return res.status(500).json({ 
       success: false, 
-      message: 'An error occurred while processing your submission. Please try again.',
-      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+      message: 'Internal server error', 
+      error: error.message 
     });
   }
 };
+
 
 // GET /api/challenges/project/:projectId/failed-attempts-count
 const getFailedAttemptsCountHandler = async (req, res) => {
