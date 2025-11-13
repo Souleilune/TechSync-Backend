@@ -1,8 +1,6 @@
 // backend/controllers/challengeController.js - COMPLETE FILE WITH AWARDS INTEGRATION
 const supabase = require('../config/supabase');
 const { runTests } = require('../utils/codeEvaluator');
-const { evaluateCodeWithLanguageFeatures } = require('../utils/languageBasedEvaluator');
-
 
 // Helper function to check weekly challenge awards after submission
 const checkWeeklyChallengeAwardAfterSubmission = async (userId, projectId) => {
