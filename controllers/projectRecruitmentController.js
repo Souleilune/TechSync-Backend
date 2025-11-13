@@ -289,56 +289,93 @@ const canAttemptChallenge = async (req, res) => {
     const { projectId } = req.params;
     const userId = req.user.id;
 
+    console.log('🔍 Checking attempt eligibility for:', { projectId, userId });
+
     // Already a member?
-    const { data: membership } = await supabase
+    const { data: membership, error: memberError } = await supabase
       .from('project_members')
       .select('*')
       .eq('project_id', projectId)
       .eq('user_id', userId)
       .single();
 
+    if (memberError && memberError.code !== 'PGRST116') {
+      console.error('Error checking membership:', memberError);
+      throw memberError;
+    }
+
     if (membership) {
+      console.log('❌ User is already a member');
       return res.json({
         canAttempt: false,
         reason: 'already_member',
-        message: 'You are already a member of this project'
+        message: 'You are already a member of this project',
+        alertData: null
       });
+    }
+
+    // Get project details for the response
+    const { data: project, error: projectError } = await supabase
+      .from('projects')
+      .select(`
+        id,
+        title,
+        project_languages(
+          language_id,
+          is_primary,
+          programming_languages(id, name)
+        )
+      `)
+      .eq('id', projectId)
+      .single();
+
+    if (projectError) {
+      console.error('Error fetching project:', projectError);
+      throw projectError;
     }
 
     // Check failed attempts
     const failedAttemptsCount = await getFailedAttemptsCount(userId, projectId);
+    console.log('📊 Failed attempts count:', failedAttemptsCount);
 
     // Check if we should show alert
     let alertData = null;
     if (failedAttemptsCount >= 7) {
-      const { data: project } = await supabase
-        .from('projects')
-        .select('title, project_languages(language_id, is_primary)')
-        .eq('id', projectId)
-        .single();
-
       const title = project?.title || 'this project';
-      const plId = project?.project_languages?.find(pl => pl.is_primary)?.language_id ||
-                   project?.project_languages?.[0]?.language_id ||
+      const primaryLang = project?.project_languages?.find(pl => pl.is_primary);
+      const plId = primaryLang?.language_id || 
+                   project?.project_languages?.[0]?.language_id || 
                    2;
 
+      console.log('⚠️ Alert should be shown. Failed attempts:', failedAttemptsCount);
+      
       alertData = {
         shouldShow: true,
         attemptCount: failedAttemptsCount,
         message: generateComfortingMessage(failedAttemptsCount, title),
-        programmingLanguageId: plId
+        programmingLanguageId: plId,
+        difficultyLevel: 'medium', // You can adjust this based on project complexity
+        projectTitle: title
       };
     }
 
+    console.log('✅ Can attempt:', {
+      canAttempt: true,
+      failedAttemptsCount,
+      hasAlert: !!alertData
+    });
+
     return res.json({
+      success: true,
       canAttempt: true,
       failedAttempts: failedAttemptsCount,
-      alertData
+      alertData: alertData || null
     });
   } catch (error) {
-    console.error('Error in canAttemptChallenge:', error);
+    console.error('❌ Error in canAttemptChallenge:', error);
     return res.status(500).json({
       success: false,
+      canAttempt: false,
       message: 'Internal server error',
       error: error.message
     });
