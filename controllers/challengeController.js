@@ -659,7 +659,7 @@ const submitSimpleChallenge = async (req, res) => {
         score: score,
         status: status,
         feedback: feedback,
-submitted_at: new Date().toISOString(),      })
+submitted_at: new Date().toISOString(),})
       .select()
       .single();
 

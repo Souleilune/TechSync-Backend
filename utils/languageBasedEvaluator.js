@@ -421,7 +421,7 @@ async function evaluateCodeWithLanguageFeatures(submittedCode, challenge, projec
 
     // Determine if passed (70% threshold)
     const passed = score >= 70;
-    const status = passed ? 'passed' : 'completed';
+    const status = passed ? 'passed' : 'failed';
 
     // Generate detailed feedback
     let feedback = generateFeedback(score, details, languageName);
