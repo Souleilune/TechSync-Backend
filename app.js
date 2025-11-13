@@ -64,58 +64,119 @@ app.use(cors({
   origin: function(origin, callback) {
     console.log('📨 Request from origin:', origin);
     
-    // ✅ Allow requests with no origin (mobile apps, Postman, server-to-server)
     if (!origin) {
       console.log('✅ No origin - allowing');
       return callback(null, true);
     }
     
-    // ✅ Check if origin is in allowed list
     if (allowedOrigins.includes(origin)) {
       console.log('✅ Origin in allowed list:', origin);
       return callback(null, true);
     }
     
-    // ✅ CRITICAL FIX: Allow ALL Vercel deployments (production + preview)
     if (origin.includes('.vercel.app')) {
       console.log('✅ Vercel deployment allowed:', origin);
       return callback(null, true);
     }
     
-    // ✅ Allow localhost in ANY environment (not just development)
     if (origin.includes('localhost') || origin.includes('127.0.0.1')) {
       console.log('✅ Localhost allowed:', origin);
       return callback(null, true);
     }
     
-    // Only NOW reject if nothing matched
     console.error('❌ Origin REJECTED:', origin);
     console.error('   Allowed origins:', allowedOrigins);
     return callback(new Error('Not allowed by CORS'));
   },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
-  allowedHeaders: ['Origin', 'X-Requested-With', 'Content-Type', 'Accept', 'Authorization'],
+  allowedHeaders: ['Origin', 'X-Requested-With', 'Content-Type', 'Accept', 'Authorization'], // ⚠️ THIS IS THE PROBLEM
   exposedHeaders: ['Content-Range', 'X-Content-Range'],
-  maxAge: 86400 // 24 hours
+  maxAge: 86400
 }));
 
-// Handle preflight requests
-app.options('*', cors());
+// ============================================================
+// REPLACE WITH THIS:
+// ============================================================
 
-// Additional CORS headers
+app.use(cors({
+  origin: function(origin, callback) {
+    console.log('📨 Request from origin:', origin);
+    
+    if (!origin) {
+      console.log('✅ No origin - allowing');
+      return callback(null, true);
+    }
+    
+    if (allowedOrigins.includes(origin)) {
+      console.log('✅ Origin in allowed list:', origin);
+      return callback(null, true);
+    }
+    
+    if (origin.includes('.vercel.app')) {
+      console.log('✅ Vercel deployment allowed:', origin);
+      return callback(null, true);
+    }
+    
+    if (origin.includes('localhost') || origin.includes('127.0.0.1')) {
+      console.log('✅ Localhost allowed:', origin);
+      return callback(null, true);
+    }
+    
+    console.error('❌ Origin REJECTED:', origin);
+    console.error('   Allowed origins:', allowedOrigins);
+    return callback(new Error('Not allowed by CORS'));
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
+  allowedHeaders: [
+    'Origin',
+    'X-Requested-With',
+    'Content-Type',
+    'Accept',
+    'Authorization',
+    'Cache-Control',      // ✅ ADD THIS
+    'Pragma',             // ✅ ADD THIS
+    'Expires'             // ✅ ADD THIS
+  ],
+  exposedHeaders: ['Content-Range', 'X-Content-Range'],
+  maxAge: 86400
+}));
+
+// ============================================================
+// ALSO UPDATE THE MIDDLEWARE SECTION (around line 60-80):
+// ============================================================
+
+// FIND THIS CODE:
 app.use((req, res, next) => {
   const origin = req.headers.origin;
   
-  // Set CORS headers for allowed origins
   if (!origin || allowedOrigins.includes(origin) || origin.includes('.vercel.app')) {
     res.header('Access-Control-Allow-Origin', origin || '*');
     res.header('Access-Control-Allow-Credentials', 'true');
     res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS, PATCH');
-    res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
+    res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization'); // ⚠️ THIS TOO
   }
   
-  // Handle OPTIONS preflight
+  if (req.method === 'OPTIONS') {
+    res.status(200).end();
+    return;
+  }
+  
+  next();
+});
+
+// REPLACE WITH THIS:
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
+  
+  if (!origin || allowedOrigins.includes(origin) || origin.includes('.vercel.app')) {
+    res.header('Access-Control-Allow-Origin', origin || '*');
+    res.header('Access-Control-Allow-Credentials', 'true');
+    res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS, PATCH');
+    res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization, Cache-Control, Pragma, Expires'); // ✅ UPDATED
+  }
+  
   if (req.method === 'OPTIONS') {
     res.status(200).end();
     return;
