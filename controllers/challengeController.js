@@ -639,7 +639,7 @@ const submitSimpleChallenge = async (req, res) => {
       if (hasLogic) score += 20;
       score = Math.min(100, score);
       
-      status = score >= 70 ? 'passed' : 'completed';
+      status = score >= 70 ? 'passed' : 'failed';
       feedback = 'Code evaluated with basic metrics. ' + (score >= 70 ? 'Good effort!' : 'Keep practicing!');
       
       evaluationDetails = {
