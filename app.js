@@ -53,7 +53,7 @@ app.set('trust proxy', 1);
 const allowedOrigins = [
   'http://localhost:3000',
   'http://127.0.0.1:3000',
-  process.env.FRONTEND_URL
+  process.env.REACT_APP_URL
 ].filter(Boolean);
 
 // ✅ FIXED CORS - Allow requests with no origin (proxy requests)
