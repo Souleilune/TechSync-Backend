@@ -60,41 +60,6 @@ const allowedOrigins = [
 console.log('🔒 CORS Allowed Origins:', allowedOrigins);
 console.log('🌍 NODE_ENV:', process.env.NODE_ENV);
 
-app.use(cors({
-  origin: function(origin, callback) {
-    console.log('📨 Request from origin:', origin);
-    
-    if (!origin) {
-      console.log('✅ No origin - allowing');
-      return callback(null, true);
-    }
-    
-    if (allowedOrigins.includes(origin)) {
-      console.log('✅ Origin in allowed list:', origin);
-      return callback(null, true);
-    }
-    
-    if (origin.includes('.vercel.app')) {
-      console.log('✅ Vercel deployment allowed:', origin);
-      return callback(null, true);
-    }
-    
-    if (origin.includes('localhost') || origin.includes('127.0.0.1')) {
-      console.log('✅ Localhost allowed:', origin);
-      return callback(null, true);
-    }
-    
-    console.error('❌ Origin REJECTED:', origin);
-    console.error('   Allowed origins:', allowedOrigins);
-    return callback(new Error('Not allowed by CORS'));
-  },
-  credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
-  allowedHeaders: ['Origin', 'X-Requested-With', 'Content-Type', 'Accept', 'Authorization'], // ⚠️ THIS IS THE PROBLEM
-  exposedHeaders: ['Content-Range', 'X-Content-Range'],
-  maxAge: 86400
-}));
-
 // ============================================================
 // REPLACE WITH THIS:
 // ============================================================
