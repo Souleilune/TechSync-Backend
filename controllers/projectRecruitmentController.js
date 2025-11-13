@@ -563,9 +563,13 @@ const submitChallengeAttempt = async (req, res) => {
       }
 
       return res.json({
-        success: true,
+      success: true,
+      message: `Congratulations! You've been added to ${project.title}!`,
+      data: {  // ✅ Wrap in 'data' property
         passed: true,
-        message: `Congratulations! You've been added to ${project.title}!`,
+        projectJoined: true,  // ✅ Add this flag
+        score: finalScore,
+        feedback: feedback,
         attempt: {
           id: attempt.id,
           score: finalScore,
@@ -574,7 +578,8 @@ const submitChallengeAttempt = async (req, res) => {
         },
         evaluation,
         redirect: `/projects/${projectId}`
-      });
+      }
+    });
     }
 
     // Failed attempt
@@ -586,19 +591,33 @@ const submitChallengeAttempt = async (req, res) => {
     }
 
     return res.json({
-      success: false,
-      passed: false,
-      message: 'Challenge not passed. Keep trying!',
-      attempt: {
-        id: attempt.id,
-        score: finalScore,
-        feedback: feedback,
-        status: 'failed'
-      },
-      evaluation,
-      failedAttempts: failedAttemptsCount,
-      comfortingMessage
-    });
+  success: true,  // ✅ Changed to true (operation succeeded)
+  message: 'Challenge not passed. Keep trying!',
+  data: {  // ✅ Wrap in 'data' property
+    passed: false,
+    projectJoined: false,  // ✅ Add this flag
+    score: finalScore,
+    feedback: feedback,
+    attempt: {
+      id: attempt.id,
+      score: finalScore,
+      feedback: feedback,
+      status: 'failed'
+    },
+    evaluation,
+    failedAttempts: failedAttemptsCount,
+    comfortingMessage,
+    alertData: failedAttemptsCount >= 7 ? {  // ✅ Include alertData
+      shouldShow: true,
+      attemptCount: failedAttemptsCount,
+      message: comfortingMessage,
+      programmingLanguageId: challenge?.programming_language_id || 2,
+      difficultyLevel: challenge?.difficulty_level || 'medium',
+      projectTitle: project.title,
+      challengeId: challenge?.id
+    } : null
+  }
+});
 
   } catch (error) {
     console.error('❌ Error in submitChallengeAttempt:', error);
