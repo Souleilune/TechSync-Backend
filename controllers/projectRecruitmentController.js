@@ -2,6 +2,8 @@
 const supabase = require('../config/supabase');
 const { updateSkillRatings } = require('./challengeController');
 const { runTests } = require('../utils/codeEvaluator'); // ADD THIS IMPORT
+const { evaluateCodeWithLanguageFeatures } = require('../utils/languageBasedEvaluator');
+
 
 /* ============================== Helper Functions ============================== */
 
@@ -357,8 +359,16 @@ const submitChallengeAttempt = async (req, res) => {
       codeLength: submittedCode?.length
     });
 
+    // Validate input
+    if (!submittedCode || submittedCode.trim().length < 10) {
+      return res.status(400).json({
+        success: false,
+        message: 'Code submission is too short. Please provide a more complete solution.'
+      });
+    }
+
     // Get project with languages
-    const { data: project } = await supabase
+    const { data: project, error: projectError } = await supabase
       .from('projects')
       .select(`
         *,
@@ -371,132 +381,93 @@ const submitChallengeAttempt = async (req, res) => {
       .eq('id', projectId)
       .single();
 
-    if (!project) {
+    if (projectError || !project) {
+      console.error('Project fetch error:', projectError);
       return res.status(404).json({ success: false, message: 'Project not found' });
     }
 
     // Get the challenge details if available
     let challenge = null;
-    let useJudge0 = false;
-    let evaluation = null;
-
+    
     if (challengeId && !challengeId.startsWith('temp_')) {
-      const { data: challengeData } = await supabase
+      const { data: challengeData, error: challengeError } = await supabase
         .from('coding_challenges')
-        .select('*')
+        .select('*, programming_languages(id, name)')
         .eq('id', challengeId)
         .single();
       
-      challenge = challengeData;
-
-      // Check if challenge has test cases for Judge0 evaluation
-      if (challenge && challenge.test_cases) {
-        useJudge0 = true;
-        console.log('✅ Challenge has test cases, using Judge0 evaluation');
+      if (challengeError) {
+        console.error('Challenge fetch error:', challengeError);
+      } else {
+        challenge = challengeData;
+        console.log('✅ Challenge found:', {
+          id: challenge.id,
+          title: challenge.title,
+          language: challenge.programming_languages?.name
+        });
       }
     }
 
     let finalScore = 0;
     let feedback = '';
     let passed = false;
-    let testResults = null;
+    let evaluation = null;
 
-    // USE JUDGE0 IF TEST CASES ARE AVAILABLE
-    if (useJudge0 && challenge) {
-      try {
-        console.log('🔧 Running Judge0 code execution...');
-        
-        const languageName = challenge.programming_languages?.name || 
-                           project.project_languages?.find(pl => pl.is_primary)?.programming_languages?.name ||
-                           'JavaScript';
+    // ✅ FIXED: Wrapped evaluation in try-catch with proper fallback
+    console.log('🔧 Running language-based code evaluation...');
+    
+    try {
+      // Call evaluateCodeWithLanguageFeatures with proper error handling
+      const evaluationResult = await evaluateCodeWithLanguageFeatures(
+        submittedCode, 
+        challenge, 
+        project
+      );
 
-        const judge0Result = await runTests({
-          sourceCode: submittedCode,
-          languageName: languageName,
-          testCases: challenge.test_cases,
-          challengeId: challenge.id,
-          timeLimitMs: (challenge.time_limit_minutes || 5) * 60 * 1000,
-          memoryLimitMb: 256
-        });
-
-        console.log('✅ Judge0 execution complete:', {
-          passedCount: judge0Result.passedCount,
-          totalCount: judge0Result.totalCount,
-          allPassed: judge0Result.allPassed
-        });
-
-        // Calculate score based on test results
-        finalScore = judge0Result.totalCount > 0 
-          ? Math.round((judge0Result.passedCount / judge0Result.totalCount) * 100)
-          : 0;
-
-        passed = judge0Result.allPassed && finalScore >= 70;
-
-        // Generate feedback based on test results
-        if (passed) {
-          feedback = `🎉 Excellent work! All ${judge0Result.totalCount} test cases passed!`;
-        } else if (judge0Result.passedCount > 0) {
-          feedback = `Good effort! You passed ${judge0Result.passedCount} out of ${judge0Result.totalCount} test cases. Keep working on the remaining cases.`;
-        } else {
-          feedback = `None of the test cases passed. Review the requirements and try again.`;
-        }
-
-        testResults = judge0Result.tests;
+      // Check if evaluation was successful
+      if (evaluationResult && typeof evaluationResult.score === 'number') {
+        finalScore = evaluationResult.score;
+        feedback = evaluationResult.feedback;
+        passed = evaluationResult.passed;
 
         evaluation = {
           score: finalScore,
           feedback: feedback,
-          testResults: testResults,
-          passedCount: judge0Result.passedCount,
-          totalCount: judge0Result.totalCount,
-          executionTimeMs: judge0Result.totalTimeMs,
-          memoryUsageKb: judge0Result.peakMemoryKb,
-          usedJudge0: true
+          details: evaluationResult.details,
+          usedLanguageFeatures: true,
+          languageName: evaluationResult.details?.languageName || 'Unknown'
         };
 
-        console.log('✅ Judge0 evaluation complete:', {
+        console.log('✅ Language-based evaluation complete:', {
           score: finalScore,
           passed: passed,
-          passedTests: judge0Result.passedCount,
-          totalTests: judge0Result.totalCount
+          foundFeatures: evaluationResult.details?.foundFeatures?.length || 0
         });
-
-      } catch (judge0Error) {
-        console.error('❌ Judge0 execution failed:', judge0Error);
-        console.log('⚠️ Falling back to heuristic evaluation');
-        
-        // Fallback to heuristic evaluation
-        const heuristicResult = evaluateCodeSubmissionHeuristic(submittedCode, project);
-        finalScore = heuristicResult.score;
-        feedback = heuristicResult.feedback + ' (Note: Could not execute code, used basic evaluation)';
-        passed = finalScore >= 70;
-        
-        evaluation = {
-          score: finalScore,
-          feedback: feedback,
-          details: heuristicResult.details,
-          usedJudge0: false,
-          judge0Error: judge0Error.message
-        };
+      } else {
+        // Evaluation returned invalid result, use fallback
+        throw new Error('Invalid evaluation result');
       }
-    } else {
-      // No test cases available - use heuristic evaluation
-      console.log('⚠️ No test cases available, using heuristic evaluation');
+
+    } catch (evaluationError) {
+      console.error('❌ Language-based evaluation failed:', evaluationError);
+      console.log('⚠️ Falling back to heuristic evaluation');
       
+      // Fallback to heuristic evaluation
       const heuristicResult = evaluateCodeSubmissionHeuristic(submittedCode, project);
       finalScore = heuristicResult.score;
-      feedback = heuristicResult.feedback;
+      feedback = heuristicResult.feedback + ' (Note: Used basic evaluation)';
       passed = finalScore >= 70;
       
       evaluation = {
         score: finalScore,
         feedback: feedback,
         details: heuristicResult.details,
-        usedJudge0: false
+        usedLanguageFeatures: false,
+        evaluationError: evaluationError.message
       };
     }
 
-    // Create attempt record - FIXED: using submitted_at instead of completed_at
+    // ✅ Create attempt record with proper error handling
     const { data: attempt, error: attemptError } = await supabase
       .from('challenge_attempts')
       .insert({
@@ -507,20 +478,19 @@ const submitChallengeAttempt = async (req, res) => {
         score: finalScore,
         status: passed ? 'passed' : 'failed',
         started_at: startedAt || new Date().toISOString(),
-        submitted_at: new Date().toISOString(), // ✅ FIXED: use submitted_at instead of completed_at
-        feedback: feedback,
-        test_cases_passed: evaluation.passedCount || 0,
-        total_test_cases: evaluation.totalCount || 0,
-        execution_time_ms: evaluation.executionTimeMs || 0,
-        memory_usage_mb: evaluation.memoryUsageKb ? Math.round(evaluation.memoryUsageKb / 1024) : 0,
-        results: testResults ? { tests: testResults } : null
+        submitted_at: new Date().toISOString(),
+        feedback: feedback
       })
       .select()
       .single();
 
     if (attemptError) {
       console.error('Error creating attempt:', attemptError);
-      return res.status(500).json({ success: false, message: 'Failed to record attempt' });
+      return res.status(500).json({ 
+        success: false, 
+        message: 'Failed to record attempt',
+        error: attemptError.message 
+      });
     }
 
     console.log('✅ Attempt record created:', {
@@ -551,16 +521,12 @@ const submitChallengeAttempt = async (req, res) => {
         membershipData = newMember;
 
         // Update project member count
-        const { error: updateError } = await supabase
+        await supabase
           .from('projects')
           .update({
             current_members: (project.current_members || 0) + 1
           })
           .eq('id', projectId);
-
-        if (updateError) {
-          console.error('Error updating project member count:', updateError);
-        }
 
         console.log('🎉 User successfully joined project!');
       }
@@ -582,30 +548,7 @@ const submitChallengeAttempt = async (req, res) => {
       console.warn('Rating update failed (non-blocking):', e.message);
     }
 
-    // Alert data on fail
-    let alertData = null;
-    if (!passed) {
-      const failedAttemptsCount = await getFailedAttemptsCount(userId, projectId);
-      if (failedAttemptsCount >= 7) {
-        const title = project.title || 'this project';
-        
-        const plId = project.project_languages?.find(pl => pl.is_primary)?.language_id ||
-                     project.project_languages?.[0]?.language_id ||
-                     2;
-
-        alertData = {
-          shouldShow: true,
-          attemptCount: failedAttemptsCount,
-          message: generateComfortingMessage(failedAttemptsCount, title),
-          challengeId: challenge?.id,
-          programmingLanguageId: plId,
-          difficultyLevel: challenge?.difficulty_level || 'beginner'
-        };
-        
-        console.log('Alert data created:', alertData);
-      }
-    }
-
+    // ✅ FIXED: Always return success response (even on failure)
     return res.json({
       success: true,
       data: {
@@ -616,22 +559,19 @@ const submitChallengeAttempt = async (req, res) => {
         feedback,
         membership: membershipData,
         status: passed ? 'passed' : 'failed',
-        evaluation,
-        alertData
+        evaluation
       }
     });
+
   } catch (error) {
-    console.error('Error in submitChallengeAttempt:', error);
-    return res.status(200).json({
-      success: true,
-      data: {
-        attempt: null,
-        score: 0,
-        passed: false,
-        projectJoined: false,
-        feedback: 'There was an issue evaluating your solution. Please check your code and try again.',
-        status: 'error'
-      }
+    console.error('❌ Error in submitChallengeAttempt:', error);
+    
+    // ✅ CRITICAL FIX: Always return 200 with success: true
+    // This prevents CORS-like errors from unhandled exceptions
+    return res.status(200).json({ 
+      success: false, 
+      message: 'An error occurred while processing your submission. Please try again.',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
   }
 };
