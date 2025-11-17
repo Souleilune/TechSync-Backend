@@ -1,6 +1,7 @@
 // backend/controllers/taskController.js
 const supabase = require('../config/supabase');
 const { checkAutoComplete } = require('./collaborativeProjectCompletion'); // Import the helper
+const { evaluateCodeWithLanguageFeatures } = require('../utils/languageBasedEvaluator');
 
 
 // Update a task - IMPROVED ERROR HANDLING
@@ -586,6 +587,8 @@ const getTask = async (req, res) => {
   }
 };
 
+
+
 // Delete a task
 const deleteTask = async (req, res) => {
   try {
@@ -803,11 +806,196 @@ const getTaskStats = async (req, res) => {
   }
 };
 
+/**
+ * Submit code for a task with automated evaluation
+ * @route POST /api/projects/:projectId/tasks/:taskId/submit
+ */
+const submitTaskCode = async (req, res) => {
+  try {
+    const { projectId, taskId } = req.params;
+    const { submitted_code } = req.body;
+    const userId = req.user.id;
+
+    console.log('📝 Submitting code for task:', taskId);
+
+    // Validate required fields
+    if (!submitted_code || !submitted_code.trim()) {
+      return res.status(400).json({
+        success: false,
+        message: 'Code submission cannot be empty'
+      });
+    }
+
+    // Get task details
+    const { data: task, error: taskError } = await supabase
+      .from('project_tasks')
+      .select('*')
+      .eq('id', taskId)
+      .eq('project_id', projectId)
+      .single();
+
+    if (taskError || !task) {
+      console.error('Task not found:', taskError);
+      return res.status(404).json({
+        success: false,
+        message: 'Task not found'
+      });
+    }
+
+    // Get project details with languages
+    const { data: project, error: projectError } = await supabase
+      .from('projects')
+      .select(`
+        *,
+        project_languages (
+          language_id,
+          is_primary,
+          programming_languages (
+            id,
+            name
+          )
+        )
+      `)
+      .eq('id', projectId)
+      .single();
+
+    if (projectError || !project) {
+      console.error('Project not found:', projectError);
+      return res.status(404).json({
+        success: false,
+        message: 'Project not found'
+      });
+    }
+
+    console.log('🔍 Evaluating code with language-based evaluator...');
+    
+    // Evaluate code using languageBasedEvaluator
+    // This will provide guidance on syntax but NOT reject submissions
+    const evaluation = await evaluateCodeWithLanguageFeatures(
+      submitted_code,
+      null, // No challenge object for task submissions
+      project
+    );
+
+    console.log('✅ Code evaluation complete:', {
+      score: evaluation.score,
+      passed: evaluation.passed
+    });
+
+    // Insert submission into task_submissions table
+    // Status is always 'pending' - submissions are NOT rejected based on code quality
+    const { data: submission, error: submissionError } = await supabase
+      .from('task_submissions')
+      .insert({
+        task_id: taskId,
+        user_id: userId,
+        submitted_code: submitted_code.trim(),
+        status: 'pending', // Always pending for human review
+        automated_review_score: evaluation.score,
+        automated_feedback: evaluation.feedback,
+        code_quality_metrics: {
+          details: evaluation.details,
+          languageName: evaluation.details?.languageName,
+          foundFeatures: evaluation.details?.foundFeatures || [],
+          missingFeatures: evaluation.details?.missingFeatures || []
+        }
+      })
+      .select()
+      .single();
+
+    if (submissionError) {
+      console.error('Error saving submission:', submissionError);
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to save code submission'
+      });
+    }
+
+    console.log('✅ Code submission saved successfully');
+
+    // Return success with evaluation results
+    res.status(201).json({
+      success: true,
+      message: 'Code submitted successfully! Your submission has been saved for review.',
+      data: {
+        submission: submission,
+        evaluation: {
+          score: evaluation.score,
+          feedback: evaluation.feedback,
+          details: evaluation.details,
+          note: 'This score is for guidance only. Your submission will be reviewed by project members.'
+        }
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Submit task code error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to submit code',
+      error: error.message
+    });
+  }
+};
+
+/**
+ * Get submissions for a specific task
+ * @route GET /api/projects/:projectId/tasks/:taskId/submissions
+ */
+const getTaskSubmissions = async (req, res) => {
+  try {
+    const { projectId, taskId } = req.params;
+    const userId = req.user.id;
+
+    console.log('📋 Fetching submissions for task:', taskId);
+
+    // Get submissions with user details
+    const { data: submissions, error } = await supabase
+      .from('task_submissions')
+      .select(`
+        *,
+        users!task_submissions_user_id_fkey (
+          id,
+          username,
+          full_name,
+          avatar_url
+        )
+      `)
+      .eq('task_id', taskId)
+      .order('submitted_at', { ascending: false });
+
+    if (error) {
+      console.error('Error fetching submissions:', error);
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to fetch submissions'
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      data: {
+        submissions: submissions || []
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Get task submissions error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch submissions',
+      error: error.message
+    });
+  }
+};
+
 module.exports = {
   getProjectTasks,
   createTask,
   updateTask,
   deleteTask,
   getTask,
-  getTaskStats
+  getTaskStats,
+  submitTaskCode,
+  getTaskSubmissions
 };

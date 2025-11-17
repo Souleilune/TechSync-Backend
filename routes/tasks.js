@@ -7,9 +7,12 @@ const {
   updateTask,
   deleteTask,
   getTask,
-  getTaskStats
+  getTaskStats,
+  submitTaskCode,
+  getTaskSubmissions
 } = require('../controllers/taskController');
 const authMiddleware = require('../middleware/auth');
+
 
 const router = express.Router();
 
@@ -107,6 +110,16 @@ const createTaskValidation = [
       }
       return true;
     })
+];
+
+const submitCodeValidation = [
+  body('submitted_code')
+    .notEmpty()
+    .withMessage('Code submission is required')
+    .isString()
+    .withMessage('Code must be a string')
+    .isLength({ min: 10 })
+    .withMessage('Code must be at least 10 characters long')
 ];
 
 // FIXED: More flexible validation for updates
@@ -284,6 +297,24 @@ router.delete(
   taskIdValidation,
   handleValidationErrors,
   deleteTask
+);
+
+router.post(
+  '/:projectId/tasks/:taskId/submit',
+  projectIdValidation,
+  taskIdValidation,
+  submitCodeValidation,
+  handleValidationErrors,
+  submitTaskCode
+);
+
+// GET /api/projects/:projectId/tasks/:taskId/submissions - Get all submissions for a task
+router.get(
+  '/:projectId/tasks/:taskId/submissions',
+  projectIdValidation,
+  taskIdValidation,
+  handleValidationErrors,
+  getTaskSubmissions
 );
 
 module.exports = router;
