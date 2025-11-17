@@ -128,6 +128,88 @@ const setupSocketHandlers = (io) => {
     // Add to connection manager
     connectionManager.addConnection(socket.userId, socket.id);
 
+    // Friends Chat Handlers
+socket.on('join_friends_chat', async () => {
+  try {
+    const userId = socket.userId;
+    const userRoom = `user_${userId}`;
+    socket.join(userRoom);
+    
+    const { data: friendships } = await supabase
+      .from('user_friendships')
+      .select('requester_id, addressee_id')
+      .or(`requester_id.eq.${userId},addressee_id.eq.${userId}`)
+      .eq('status', 'accepted');
+
+    const friendIds = friendships?.map(f => 
+      f.requester_id === userId ? f.addressee_id : f.requester_id
+    ) || [];
+
+    friendIds.forEach(friendId => {
+      io.to(`user_${friendId}`).emit('friend_online', {
+        userId: userId,
+        username: socket.user.username
+      });
+    });
+
+    const onlineFriends = friendIds.filter(friendId => 
+      Array.from(io.sockets.sockets.values()).some(s => s.userId === friendId)
+    );
+
+    socket.emit('online_friends_list', { onlineFriends });
+
+    console.log(`User ${userId} joined friends chat`);
+  } catch (error) {
+    console.error('Error joining friends chat:', error);
+  }
+});
+
+socket.on('send_friend_message', async (data) => {
+  try {
+    const { recipientId, content } = data;
+    const senderId = socket.userId;
+
+    const { data: friendship } = await supabase
+      .from('user_friendships')
+      .select('id')
+      .or(`and(requester_id.eq.${senderId},addressee_id.eq.${recipientId},status.eq.accepted),and(requester_id.eq.${recipientId},addressee_id.eq.${senderId},status.eq.accepted)`)
+      .single();
+
+    if (!friendship) {
+      socket.emit('error', { message: 'Not friends with this user' });
+      return;
+    }
+
+    const { data: message, error } = await supabase
+      .from('friend_messages')
+      .insert({
+        sender_id: senderId,
+        recipient_id: recipientId,
+        content: content.trim()
+      })
+      .select()
+      .single();
+
+    if (error) {
+      console.error('Error saving friend message:', error);
+      socket.emit('error', { message: 'Failed to send message' });
+      return;
+    }
+
+    io.to(`user_${recipientId}`).emit('friend_message', {
+      senderId: senderId,
+      message: message
+    });
+
+    socket.emit('friend_message_sent', { message });
+
+    console.log(`Message sent from ${senderId} to ${recipientId}`);
+  } catch (error) {
+    console.error('Error sending friend message:', error);
+    socket.emit('error', { message: 'Failed to send message' });
+  }
+});
+
     // ============== OPTIMIZED ROOM JOINING ==============
     socket.on('join_project_rooms', async (projectId) => {
       try {
@@ -310,6 +392,7 @@ const setupSocketHandlers = (io) => {
     socket.emit('error', { message: 'Failed to send message' });
   }
 });
+  
 
     // ============== TYPING INDICATORS (DEBOUNCED) ==============
     const typingTimeouts = new Map();
@@ -409,6 +492,8 @@ const setupSocketHandlers = (io) => {
       connectionManager.removeConnection(socket.id);
     });
   });
+
+  
 
   // Graceful shutdown
   process.on('SIGTERM', () => {

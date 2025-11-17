@@ -9,7 +9,9 @@ const {
   rejectFriendRequest,
   removeFriend,
   getFriendProfile,
-  getPublicProfile  // NEW: Import the public profile function
+  getPublicProfile,
+  getFriendMessages,  // ADD
+  sendFriendMessage   // ADD  // NEW: Import the public profile function
 } = require('../controllers/friendsController');
 
 // Apply authentication middleware to all routes
@@ -35,5 +37,8 @@ router.delete('/:friendshipId/reject', rejectFriendRequest);
 
 // DELETE /api/friends/:friendshipId - Remove friend
 router.delete('/:friendshipId', removeFriend);
+
+router.get('/:friendId/messages', getFriendMessages);
+router.post('/:friendId/messages', sendFriendMessage);
 
 module.exports = router;

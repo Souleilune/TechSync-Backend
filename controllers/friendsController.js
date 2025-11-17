@@ -535,6 +535,123 @@ const removeFriend = async (req, res) => {
   }
 };
 
+// Get messages with a friend
+const getFriendMessages = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { friendId } = req.params;
+    const { page = 1, limit = 50 } = req.query;
+    const offset = (page - 1) * limit;
+
+    // Verify friendship
+    const { data: friendship } = await supabase
+      .from('user_friendships')
+      .select('id')
+      .or(`and(requester_id.eq.${userId},addressee_id.eq.${friendId},status.eq.accepted),and(requester_id.eq.${friendId},addressee_id.eq.${userId},status.eq.accepted)`)
+      .single();
+
+    if (!friendship) {
+      return res.status(403).json({
+        success: false,
+        message: 'Not friends with this user'
+      });
+    }
+
+    const { data: messages, error } = await supabase
+      .from('friend_messages')
+      .select('*')
+      .or(`and(sender_id.eq.${userId},recipient_id.eq.${friendId}),and(sender_id.eq.${friendId},recipient_id.eq.${userId})`)
+      .order('created_at', { ascending: true })
+      .range(offset, offset + limit - 1);
+
+    if (error) {
+      console.error('Error fetching messages:', error);
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to fetch messages'
+      });
+    }
+
+    await supabase
+      .from('friend_messages')
+      .update({ read: true })
+      .eq('recipient_id', userId)
+      .eq('sender_id', friendId)
+      .eq('read', false);
+
+    res.json({
+      success: true,
+      data: messages || []
+    });
+
+  } catch (error) {
+    console.error('Error in getFriendMessages:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error'
+    });
+  }
+};
+
+// Send message to friend
+const sendFriendMessage = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { friendId } = req.params;
+    const { content } = req.body;
+
+    if (!content || !content.trim()) {
+      return res.status(400).json({
+        success: false,
+        message: 'Message content is required'
+      });
+    }
+
+    const { data: friendship } = await supabase
+      .from('user_friendships')
+      .select('id')
+      .or(`and(requester_id.eq.${userId},addressee_id.eq.${friendId},status.eq.accepted),and(requester_id.eq.${friendId},addressee_id.eq.${userId},status.eq.accepted)`)
+      .single();
+
+    if (!friendship) {
+      return res.status(403).json({
+        success: false,
+        message: 'Not friends with this user'
+      });
+    }
+
+    const { data: message, error } = await supabase
+      .from('friend_messages')
+      .insert({
+        sender_id: userId,
+        recipient_id: friendId,
+        content: content.trim()
+      })
+      .select()
+      .single();
+
+    if (error) {
+      console.error('Error sending message:', error);
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to send message'
+      });
+    }
+
+    res.json({
+      success: true,
+      data: message
+    });
+
+  } catch (error) {
+    console.error('Error in sendFriendMessage:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error'
+    });
+  }
+};
+
 module.exports = {
   sendFriendRequest,
   getFriends,
@@ -542,5 +659,7 @@ module.exports = {
   rejectFriendRequest,
   removeFriend,
   getFriendProfile,
-  getPublicProfile  // NEW: Export the public profile function
+  getPublicProfile,
+  getFriendMessages,  
+  sendFriendMessage
 };
