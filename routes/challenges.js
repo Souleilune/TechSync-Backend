@@ -60,10 +60,27 @@ const challengeValidation = [
 ];
 
 // ===== SIMPLE CHALLENGE SUBMISSION (for solo weekly challenges) =====
+// ✅ FIXED (New)
 const simpleSubmitValidation = [
-  body('challenge_id').isUUID().withMessage('Challenge ID must be a valid UUID'),
-  body('submitted_code').isString().isLength({ min: 10, max: 50000 }).withMessage('Submitted code must be between 10 and 50000 characters'),
-  body('started_at').optional().isISO8601().withMessage('Started at must be a valid ISO 8601 date')
+  body('challenge_id')
+    .isUUID()
+    .withMessage('Challenge ID must be a valid UUID'),
+  body('submitted_code')
+    .isString()
+    .isLength({ min: 10, max: 50000 })
+    .withMessage('Submitted code must be between 10 and 50000 characters'),
+  body('language')
+    .optional()
+    .isString()
+    .withMessage('Language must be a string'),
+  body('project_id')
+    .optional()
+    .isUUID()
+    .withMessage('Project ID must be a valid UUID if provided'),
+  body('programming_language_id')
+    .optional()
+    .isInt({ min: 1 })
+    .withMessage('Programming language ID must be a positive integer')
 ];
 
 // ===== PROJECT RECRUITMENT ROUTES =====
