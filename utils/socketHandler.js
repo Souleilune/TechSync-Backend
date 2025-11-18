@@ -1,4 +1,4 @@
-// backend/utils/socketHandler.js - OPTIMIZED VERSION WITH MEMORY MANAGEMENT
+// backend/utils/socketHandler.js - PRODUCTION-OPTIMIZED VERSION
 require('dotenv').config();
 const { createClient } = require('@supabase/supabase-js');
 const jwt = require('jsonwebtoken');
@@ -11,17 +11,22 @@ if (!process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_KEY) {
 
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
 
-// ============== MEMORY-OPTIMIZED USER TRACKING ==============
+// ============== OPTIMIZED USER TRACKING ==============
 class UserConnectionManager {
   constructor() {
-    this.userSockets = new Map(); // userId -> socketId
+    this.userSockets = new Map(); // userId -> Set of socketIds (support multiple connections per user)
     this.socketUsers = new Map(); // socketId -> userId
     this.socketRooms = new Map(); // socketId -> Set of rooms
     this.cleanupInterval = null;
   }
 
   addConnection(userId, socketId) {
-    this.userSockets.set(userId, socketId);
+    // ✅ OPTIMIZATION: Support multiple sockets per user
+    if (!this.userSockets.has(userId)) {
+      this.userSockets.set(userId, new Set());
+    }
+    this.userSockets.get(userId).add(socketId);
+    
     this.socketUsers.set(socketId, userId);
     this.socketRooms.set(socketId, new Set());
   }
@@ -36,7 +41,13 @@ class UserConnectionManager {
   removeConnection(socketId) {
     const userId = this.socketUsers.get(socketId);
     if (userId) {
-      this.userSockets.delete(userId);
+      const userSockets = this.userSockets.get(userId);
+      if (userSockets) {
+        userSockets.delete(socketId);
+        if (userSockets.size === 0) {
+          this.userSockets.delete(userId);
+        }
+      }
     }
     this.socketUsers.delete(socketId);
     this.socketRooms.delete(socketId);
@@ -46,20 +57,24 @@ class UserConnectionManager {
     return this.socketRooms.get(socketId) || new Set();
   }
 
+  getUserSocketCount(userId) {
+    return this.userSockets.get(userId)?.size || 0;
+  }
+
   getStats() {
     return {
       totalConnections: this.socketUsers.size,
+      uniqueUsers: this.userSockets.size,
       totalRooms: Array.from(this.socketRooms.values()).reduce((sum, rooms) => sum + rooms.size, 0),
       memoryUsage: process.memoryUsage()
     };
   }
 
-  // Periodic cleanup of stale connections
   startCleanup() {
     this.cleanupInterval = setInterval(() => {
       const stats = this.getStats();
-      console.log(`[Socket Cleanup] Active connections: ${stats.totalConnections}, Memory: ${(stats.memoryUsage.heapUsed / 1024 / 1024).toFixed(2)}MB`);
-    }, 60000); // Every minute
+      console.log(`[Socket Cleanup] Connections: ${stats.totalConnections}, Users: ${stats.uniqueUsers}, Memory: ${(stats.memoryUsage.heapUsed / 1024 / 1024).toFixed(2)}MB`);
+    }, 60000);
   }
 
   stopCleanup() {
@@ -71,18 +86,19 @@ class UserConnectionManager {
 
 const connectionManager = new UserConnectionManager();
 
+// ✅ OPTIMIZATION: Cache for frequently accessed data
+const userCache = new Map(); // userId -> user data
+const USER_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+
 const setupSocketHandlers = (io) => {
-  console.log('🔌 Setting up optimized Socket.io handlers...');
+  console.log('🔌 Setting up production-optimized Socket.io handlers...');
   
-  // Start connection cleanup monitor
   connectionManager.startCleanup();
 
-  // ============== CONNECTION LIMITING ==============
-  // Prevent memory exhaustion from too many connections
-  const MAX_CONNECTIONS_PER_USER = 5;
-  const activeConnections = new Map(); // userId -> connection count
+  const MAX_CONNECTIONS_PER_USER = 10;
+  const activeConnections = new Map();
 
-  // Authentication middleware
+  // ✅ OPTIMIZATION: Authentication middleware with caching
   io.use(async (socket, next) => {
     try {
       const token = socket.handshake.auth.token;
@@ -92,19 +108,32 @@ const setupSocketHandlers = (io) => {
       }
 
       const decoded = jwt.verify(token, process.env.JWT_SECRET);
+      const userId = decoded.id || decoded.userId;
       
-      const { data: user, error } = await supabase
-        .from('users')
-        .select('id, username, full_name, avatar_url')
-        .eq('id', decoded.id)
-        .single();
-
-      if (error || !user) {
-        return next(new Error('Invalid authentication token'));
+      if (!userId) {
+        return next(new Error('Invalid token structure'));
       }
 
-      // Check connection limit per user
-      const userConnectionCount = activeConnections.get(user.id) || 0;
+      // ✅ OPTIMIZATION: Check cache first
+      let user = userCache.get(userId);
+      
+      if (!user || Date.now() - user.cachedAt > USER_CACHE_TTL) {
+        const { data: userData, error } = await supabase
+          .from('users')
+          .select('id, username, full_name, avatar_url')
+          .eq('id', userId)
+          .single();
+
+        if (error || !userData) {
+          return next(new Error('Invalid authentication token'));
+        }
+
+        user = { ...userData, cachedAt: Date.now() };
+        userCache.set(userId, user);
+      }
+
+      // Check connection limit
+      const userConnectionCount = connectionManager.getUserSocketCount(user.id);
       if (userConnectionCount >= MAX_CONNECTIONS_PER_USER) {
         return next(new Error('Maximum connections exceeded'));
       }
@@ -112,295 +141,326 @@ const setupSocketHandlers = (io) => {
       socket.userId = user.id;
       socket.user = user;
       
-      // Track connection count
       activeConnections.set(user.id, userConnectionCount + 1);
+      
+      if (process.env.NODE_ENV === 'development') {
+        console.log('✅ [Auth] User authenticated:', user.username);
+      }
       
       next();
     } catch (error) {
-      console.error('Socket authentication error:', error);
+      console.error('❌ [Auth] Error:', error.message);
       next(new Error('Authentication failed'));
     }
   });
 
+  // ✅ OPTIMIZATION: Global stale connection cleanup
+  const cleanupStaleConnections = () => {
+    const connectedUserIds = new Set();
+    io.sockets.sockets.forEach((s) => {
+      if (s.userId) connectedUserIds.add(s.userId);
+    });
+
+    let cleaned = 0;
+    activeConnections.forEach((count, userId) => {
+      if (!connectedUserIds.has(userId)) {
+        activeConnections.delete(userId);
+        cleaned++;
+      }
+    });
+
+    if (cleaned > 0 && process.env.NODE_ENV === 'development') {
+      console.log(`🧹 [Cleanup] Removed ${cleaned} stale entries`);
+    }
+  };
+
+  const globalCleanupInterval = setInterval(cleanupStaleConnections, 5 * 60 * 1000);
+
+  // ============== CONNECTION HANDLER ==============
   io.on('connection', (socket) => {
-    console.log(`[Connection] User ${socket.user.username} (${socket.id})`);
+    const isDev = process.env.NODE_ENV === 'development';
     
-    // Add to connection manager
+    if (isDev) {
+      console.log(`✅ [Connection] ${socket.user.username} (${socket.id})`);
+    }
+    
     connectionManager.addConnection(socket.userId, socket.id);
 
-    // Friends Chat Handlers
-socket.on('join_friends_chat', async () => {
-  try {
-    const userId = socket.userId;
-    const userRoom = `user_${userId}`;
-    socket.join(userRoom);
-    
-    const { data: friendships } = await supabase
-      .from('user_friendships')
-      .select('requester_id, addressee_id')
-      .or(`requester_id.eq.${userId},addressee_id.eq.${userId}`)
-      .eq('status', 'accepted');
-
-    const friendIds = friendships?.map(f => 
-      f.requester_id === userId ? f.addressee_id : f.requester_id
-    ) || [];
-
-    friendIds.forEach(friendId => {
-      io.to(`user_${friendId}`).emit('friend_online', {
-        userId: userId,
-        username: socket.user.username
+    // ✅ OPTIMIZATION: Only log events in development
+    if (isDev) {
+      socket.onAny((eventName) => {
+        console.log(`🎯 [Event] ${eventName} from ${socket.user.username}`);
       });
-    });
-
-    const onlineFriends = friendIds.filter(friendId => 
-      Array.from(io.sockets.sockets.values()).some(s => s.userId === friendId)
-    );
-
-    socket.emit('online_friends_list', { onlineFriends });
-
-    console.log(`User ${userId} joined friends chat`);
-  } catch (error) {
-    console.error('Error joining friends chat:', error);
-  }
-});
-
-socket.on('send_friend_message', async (data) => {
-  try {
-    const { recipientId, content } = data;
-    const senderId = socket.userId;
-
-    const { data: friendship } = await supabase
-      .from('user_friendships')
-      .select('id')
-      .or(`and(requester_id.eq.${senderId},addressee_id.eq.${recipientId},status.eq.accepted),and(requester_id.eq.${recipientId},addressee_id.eq.${senderId},status.eq.accepted)`)
-      .single();
-
-    if (!friendship) {
-      socket.emit('error', { message: 'Not friends with this user' });
-      return;
     }
 
-    const { data: message, error } = await supabase
-      .from('friend_messages')
-      .insert({
-        sender_id: senderId,
-        recipient_id: recipientId,
-        content: content.trim()
-      })
-      .select()
-      .single();
-
-    if (error) {
-      console.error('Error saving friend message:', error);
-      socket.emit('error', { message: 'Failed to send message' });
-      return;
-    }
-
-    io.to(`user_${recipientId}`).emit('friend_message', {
-      senderId: senderId,
-      message: message
-    });
-
-    socket.emit('friend_message_sent', { message });
-
-    console.log(`Message sent from ${senderId} to ${recipientId}`);
-  } catch (error) {
-    console.error('Error sending friend message:', error);
-    socket.emit('error', { message: 'Failed to send message' });
-  }
-});
-
-    // ============== OPTIMIZED ROOM JOINING ==============
-    socket.on('join_project_rooms', async (projectId) => {
+    // ============== FRIENDS CHAT ==============
+    socket.on('join_friends_chat', async () => {
       try {
-        // Verify user is member of project
-        const { data: membership, error } = await supabase
-          .from('project_members')
+        const userId = socket.userId;
+        const userRoom = `user_${userId}`;
+        socket.join(userRoom);
+        
+        const { data: friendships } = await supabase
+          .from('user_friendships')
+          .select('requester_id, addressee_id')
+          .or(`requester_id.eq.${userId},addressee_id.eq.${userId}`)
+          .eq('status', 'accepted');
+
+        const friendIds = friendships?.map(f => 
+          f.requester_id === userId ? f.addressee_id : f.requester_id
+        ) || [];
+
+        // ✅ OPTIMIZATION: Batch emit to multiple rooms
+        friendIds.forEach(friendId => {
+          io.to(`user_${friendId}`).emit('friend_online', {
+            userId,
+            username: socket.user.username
+          });
+        });
+
+        const onlineFriends = friendIds.filter(friendId => 
+          Array.from(io.sockets.sockets.values()).some(s => s.userId === friendId)
+        );
+
+        socket.emit('online_friends_list', { onlineFriends });
+      } catch (error) {
+        console.error('❌ [Friends Chat] Error:', error.message);
+      }
+    });
+
+    socket.on('send_friend_message', async (data) => {
+      if (isDev) {
+        console.log('🔵 [Friend Message] Received from:', socket.user.username);
+      }
+      
+      try {
+        const { recipientId, content } = data;
+        const senderId = socket.userId;
+
+        // ✅ OPTIMIZATION: Validate input first (fail fast)
+        if (!recipientId || !content?.trim()) {
+          socket.emit('error', { message: 'Invalid message data' });
+          return;
+        }
+
+        // Check friendship
+        const { data: friendship, error: friendshipError } = await supabase
+          .from('user_friendships')
           .select('id')
-          .eq('project_id', projectId)
-          .eq('user_id', socket.userId)
+          .or(`and(requester_id.eq.${senderId},addressee_id.eq.${recipientId},status.eq.accepted),and(requester_id.eq.${recipientId},addressee_id.eq.${senderId},status.eq.accepted)`)
           .single();
 
-        if (error || !membership) {
+        if (friendshipError || !friendship) {
+          socket.emit('error', { message: 'Not friends with this user' });
+          return;
+        }
+
+        // Insert message
+        const { data: message, error } = await supabase
+          .from('friend_messages')
+          .insert({
+            sender_id: senderId,
+            recipient_id: recipientId,
+            content: content.trim()
+          })
+          .select()
+          .single();
+
+        if (error) {
+          socket.emit('error', { message: 'Failed to send message' });
+          return;
+        }
+
+        // ✅ OPTIMIZATION: Parallel emit (don't wait)
+        io.to(`user_${recipientId}`).emit('friend_message', {
+          senderId,
+          message
+        });
+
+        socket.emit('friend_message_sent', { message });
+
+      } catch (error) {
+        console.error('❌ [Friend Message] Error:', error.message);
+        socket.emit('error', { message: 'Failed to send message' });
+      }
+    });
+
+    // ============== PROJECT ROOMS ==============
+    socket.on('join_project_rooms', async (projectId) => {
+      try {
+        // ✅ OPTIMIZATION: Parallel queries
+        const [membershipResult, roomsResult] = await Promise.all([
+          supabase
+            .from('project_members')
+            .select('id')
+            .eq('project_id', projectId)
+            .eq('user_id', socket.userId)
+            .single(),
+          supabase
+            .from('chat_rooms')
+            .select('id, name')
+            .eq('project_id', projectId)
+            .limit(50)
+        ]);
+
+        if (membershipResult.error || !membershipResult.data) {
           socket.emit('error', { message: 'Not a project member' });
           return;
         }
 
-        // Fetch chat rooms for this project (with limit to prevent memory issues)
-        const { data: rooms, error: roomsError } = await supabase
-          .from('chat_rooms')
-          .select('id, name')
-          .eq('project_id', projectId)
-          .limit(50); // Limit rooms per project
-
-        if (roomsError) {
+        if (roomsResult.error) {
           socket.emit('error', { message: 'Failed to fetch chat rooms' });
           return;
         }
 
-        // Join project room
         const projectRoom = `project_${projectId}`;
         socket.join(projectRoom);
         connectionManager.addRoom(socket.id, projectRoom);
 
-        // Join individual chat rooms
-        if (rooms && rooms.length > 0) {
-          rooms.forEach(room => {
-            const roomName = `room_${room.id}`;
-            socket.join(roomName);
+        // ✅ OPTIMIZATION: Batch join rooms
+        const rooms = roomsResult.data || [];
+        if (rooms.length > 0) {
+          const roomNames = rooms.map(room => `room_${room.id}`);
+          socket.join(roomNames);
+          roomNames.forEach(roomName => {
             connectionManager.addRoom(socket.id, roomName);
           });
         }
 
-        socket.emit('rooms_joined', {
-          projectId,
-          rooms: rooms || []
-        });
+        socket.emit('rooms_joined', { projectId, rooms });
 
       } catch (error) {
-        console.error('[join_project_rooms] Error:', error);
+        console.error('❌ [Join Rooms] Error:', error.message);
         socket.emit('error', { message: 'Failed to join project rooms' });
       }
     });
 
-    // ============== OPTIMIZED MESSAGE HANDLING ==============
-    // Rate limiting for messages
-    const MESSAGE_RATE_LIMIT = 10; // messages per minute
+    // ============== MESSAGE HANDLING ==============
+    const MESSAGE_RATE_LIMIT = 10;
     const messageTimestamps = [];
 
     socket.on('send_message', async (data) => {
-  try {
-    // Rate limiting check
-    const now = Date.now();
-    const oneMinuteAgo = now - 60000;
-    const recentMessages = messageTimestamps.filter(t => t > oneMinuteAgo);
-    
-    if (recentMessages.length >= MESSAGE_RATE_LIMIT) {
-      socket.emit('error', { message: 'Message rate limit exceeded' });
-      return;
-    }
-    
-    messageTimestamps.push(now);
-    // Clean old timestamps to prevent memory leak
-    while (messageTimestamps.length > 0 && messageTimestamps[0] < oneMinuteAgo) {
-      messageTimestamps.shift();
-    }
+      try {
+        // ✅ OPTIMIZATION: Rate limiting (fail fast)
+        const now = Date.now();
+        const oneMinuteAgo = now - 60000;
+        const recentMessages = messageTimestamps.filter(t => t > oneMinuteAgo);
+        
+        if (recentMessages.length >= MESSAGE_RATE_LIMIT) {
+          socket.emit('error', { message: 'Message rate limit exceeded' });
+          return;
+        }
+        
+        messageTimestamps.push(now);
+        while (messageTimestamps.length > 0 && messageTimestamps[0] < oneMinuteAgo) {
+          messageTimestamps.shift();
+        }
 
-    const { roomId, projectId, content, messageType = 'text', replyToMessageId = null } = data;
+        const { roomId, projectId, content, messageType = 'text', replyToMessageId = null } = data;
 
-    // Validate input
-    if (!roomId || !content || content.trim().length === 0) {
-      socket.emit('error', { message: 'Invalid message data' });
-      return;
-    }
+        // ✅ OPTIMIZATION: Validate all inputs first
+        if (!roomId || !content?.trim() || !projectId) {
+          socket.emit('error', { message: 'Invalid message data' });
+          return;
+        }
 
-    // Limit message length to prevent memory issues
-    const MAX_MESSAGE_LENGTH = 5000;
-    const trimmedContent = content.slice(0, MAX_MESSAGE_LENGTH);
+        const MAX_MESSAGE_LENGTH = 5000;
+        const trimmedContent = content.slice(0, MAX_MESSAGE_LENGTH);
 
-    // Verify room membership
-    const { data: room, error: roomError } = await supabase
-      .from('chat_rooms')
-      .select('project_id')
-      .eq('id', roomId)
-      .single();
+        // ✅ OPTIMIZATION: Parallel verification queries
+        const [roomResult, membershipResult] = await Promise.all([
+          supabase
+            .from('chat_rooms')
+            .select('project_id')
+            .eq('id', roomId)
+            .single(),
+          supabase
+            .from('project_members')
+            .select('id')
+            .eq('project_id', projectId)
+            .eq('user_id', socket.userId)
+            .single()
+        ]);
 
-    if (roomError || !room) {
-      socket.emit('error', { message: 'Chat room not found' });
-      return;
-    }
+        if (roomResult.error || !roomResult.data) {
+          socket.emit('error', { message: 'Chat room not found' });
+          return;
+        }
 
-    // Verify project membership
-    const { data: membership } = await supabase
-      .from('project_members')
-      .select('id')
-      .eq('project_id', room.project_id)
-      .eq('user_id', socket.userId)
-      .single();
+        if (membershipResult.error || !membershipResult.data) {
+          socket.emit('error', { message: 'Not a project member' });
+          return;
+        }
 
-    if (!membership) {
-      socket.emit('error', { message: 'Not a project member' });
-      return;
-    }
+        // Insert message
+        const { data: newMessage, error: insertError } = await supabase
+          .from('chat_messages')
+          .insert({
+            room_id: roomId,
+            user_id: socket.userId,
+            message_type: messageType,
+            content: trimmedContent,
+            reply_to_message_id: replyToMessageId
+          })
+          .select(`
+            *,
+            users!inner(id, username, full_name, avatar_url)
+          `)
+          .single();
 
-    // Insert message
-    const { data: newMessage, error: insertError } = await supabase
-      .from('chat_messages')
-      .insert({
-        room_id: roomId,
-        user_id: socket.userId,
-        message_type: messageType,
-        content: trimmedContent,
-        reply_to_message_id: replyToMessageId
-      })
-      .select(`
-        *,
-        users!inner(id, username, full_name, avatar_url)
-      `)
-      .single();
+        if (insertError) {
+          socket.emit('error', { message: 'Failed to send message' });
+          return;
+        }
 
-    if (insertError) {
-      console.error('[send_message] Insert error:', insertError);
-      socket.emit('error', { message: 'Failed to send message' });
-      return;
-    }
-
-    // ✅ FIX: Format the message properly - convert users array to user object
-    const processedMessage = {
-      ...newMessage,
-      user: Array.isArray(newMessage.users) ? newMessage.users[0] : newMessage.users
-    };
-    
-    // Remove the users array to avoid confusion
-    delete processedMessage.users;
-
-    // Add reply data if needed
-    if (replyToMessageId) {
-      const { data: replyToMessage } = await supabase
-        .from('chat_messages')
-        .select('*, users!inner(id, username, full_name, avatar_url)')
-        .eq('id', replyToMessageId)
-        .single();
-
-      if (replyToMessage) {
-        // ✅ FIX: Format reply message too
-        processedMessage.reply_to = {
-          ...replyToMessage,
-          user: Array.isArray(replyToMessage.users) ? replyToMessage.users[0] : replyToMessage.users
+        // Format message
+        const processedMessage = {
+          ...newMessage,
+          user: Array.isArray(newMessage.users) ? newMessage.users[0] : newMessage.users
         };
-        delete processedMessage.reply_to.users;
+        delete processedMessage.users;
+
+        // ✅ OPTIMIZATION: Fetch reply data only if needed
+        if (replyToMessageId) {
+          const { data: replyToMessage } = await supabase
+            .from('chat_messages')
+            .select('*, users!inner(id, username, full_name, avatar_url)')
+            .eq('id', replyToMessageId)
+            .single();
+
+          if (replyToMessage) {
+            processedMessage.reply_to = {
+              ...replyToMessage,
+              user: Array.isArray(replyToMessage.users) ? replyToMessage.users[0] : replyToMessage.users
+            };
+            delete processedMessage.reply_to.users;
+          }
+        }
+
+        // ✅ OPTIMIZATION: Non-blocking broadcast
+        socket.to(`room_${roomId}`).emit('new_message', {
+          message: processedMessage,
+          roomId,
+          projectId: roomResult.data.project_id
+        });
+
+        socket.emit('message_sent', {
+          message: processedMessage,
+          roomId
+        });
+
+      } catch (error) {
+        console.error('❌ [Send Message] Error:', error.message);
+        socket.emit('error', { message: 'Failed to send message' });
       }
-    }
-
-    // Broadcast to room (not back to sender)
-    socket.to(`room_${roomId}`).emit('new_message', {
-      message: processedMessage,
-      roomId,
-      projectId: room.project_id
     });
 
-    // Send confirmation to sender
-    socket.emit('message_sent', {
-      message: processedMessage,
-      roomId
-    });
-
-    console.log('[send_message] Message sent successfully:', processedMessage.id);
-
-  } catch (error) {
-    console.error('[send_message] Error:', error);
-    socket.emit('error', { message: 'Failed to send message' });
-  }
-});
-  
-
-    // ============== TYPING INDICATORS (DEBOUNCED) ==============
+    // ============== TYPING INDICATORS ==============
     const typingTimeouts = new Map();
 
     socket.on('typing_start', (data) => {
       const { roomId, projectId } = data;
       
-      // Clear existing timeout
       if (typingTimeouts.has(roomId)) {
         clearTimeout(typingTimeouts.get(roomId));
       }
@@ -412,7 +472,6 @@ socket.on('send_friend_message', async (data) => {
         projectId
       });
 
-      // Auto-stop typing after 5 seconds
       const timeout = setTimeout(() => {
         socket.to(`room_${roomId}`).emit('user_stopped_typing', {
           userId: socket.userId,
@@ -428,7 +487,6 @@ socket.on('send_friend_message', async (data) => {
     socket.on('typing_stop', (data) => {
       const { roomId, projectId } = data;
       
-      // Clear timeout
       if (typingTimeouts.has(roomId)) {
         clearTimeout(typingTimeouts.get(roomId));
         typingTimeouts.delete(roomId);
@@ -460,51 +518,65 @@ socket.on('send_friend_message', async (data) => {
       socket.emit('online_users', { projectId, users: onlineUsers });
     });
 
-    // ============== DISCONNECT HANDLING ==============
-    socket.on('disconnect', () => {
-      console.log(`[Disconnect] User ${socket.user.username} (${socket.id})`);
-      
-      // Clean up typing timeouts
-      typingTimeouts.forEach((timeout) => clearTimeout(timeout));
-      typingTimeouts.clear();
+    // ============== DISCONNECT ==============
+    socket.on('disconnect', (reason) => {
+      const userId = socket.userId;
+      const username = socket.user?.username;
 
-      // Decrease connection count
-      const userConnectionCount = activeConnections.get(socket.userId) || 0;
-      if (userConnectionCount <= 1) {
-        activeConnections.delete(socket.userId);
-      } else {
-        activeConnections.set(socket.userId, userConnectionCount - 1);
+      if (isDev) {
+        console.log(`🔌 [Disconnect] ${username} - ${reason}`);
+      }
+      
+      // Cleanup timeouts
+      if (typingTimeouts.size > 0) {
+        typingTimeouts.forEach(timeout => clearTimeout(timeout));
+        typingTimeouts.clear();
       }
 
-      // Notify rooms about user going offline
+      // Update connection count
+      if (userId) {
+        const userConnectionCount = activeConnections.get(userId) || 0;
+        const newCount = Math.max(0, userConnectionCount - 1);
+        
+        if (newCount <= 0) {
+          activeConnections.delete(userId);
+        } else {
+          activeConnections.set(userId, newCount);
+        }
+      }
+
+      // Notify rooms
       const rooms = connectionManager.getRooms(socket.id);
       rooms.forEach(roomName => {
         if (roomName.startsWith('project_')) {
           const projectId = roomName.replace('project_', '');
           socket.to(roomName).emit('user_offline', {
-            userId: socket.userId,
+            userId,
             projectId
           });
         }
       });
 
-      // Remove from connection manager
       connectionManager.removeConnection(socket.id);
     });
-  });
 
-  
+    socket.on('error', (error) => {
+      console.error(`❌ [Socket Error] ${socket.user?.username}:`, error.message);
+    });
+
+  });
 
   // Graceful shutdown
   process.on('SIGTERM', () => {
     console.log('[Socket] Shutting down...');
+    clearInterval(globalCleanupInterval);
     connectionManager.stopCleanup();
     io.close(() => {
       console.log('[Socket] Closed all connections');
     });
   });
 
-  console.log('✅ Optimized Socket.io handlers setup complete');
+  console.log('✅ Production-optimized Socket.io handlers ready');
 };
 
 module.exports = setupSocketHandlers;
