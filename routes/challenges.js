@@ -74,9 +74,17 @@ const simpleSubmitValidation = [
     .isString()
     .withMessage('Language must be a string'),
   body('project_id')
-    .optional()
-    .isUUID()
-    .withMessage('Project ID must be a valid UUID if provided'),
+  .optional({ nullable: true, checkFalsy: true })
+  .custom((value) => {
+    // Only validate if value is provided and not null/undefined
+    if (value !== null && value !== undefined && value !== '') {
+      const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+      if (!uuidRegex.test(value)) {
+        throw new Error('Project ID must be a valid UUID if provided');
+      }
+    }
+    return true;
+  }),
   body('programming_language_id')
     .optional()
     .isInt({ min: 1 })
