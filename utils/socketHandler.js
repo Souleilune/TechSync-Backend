@@ -685,6 +685,48 @@ const setupSocketHandlers = (io) => {
       });
     };
 
+    socket.on('screen_share_started', (data) => {
+  try {
+    const { roomId, projectId, userId } = data;
+    const videoRoomName = `video_${roomId}`;
+
+    if (isDev) {
+      console.log(`🖥️ [Screen Share] ${socket.user.username} started sharing screen in ${videoRoomName}`);
+    }
+
+    // Notify other participants
+    socket.to(videoRoomName).emit('screen_share_started', {
+      userId,
+      username: socket.user.username,
+      roomId
+    });
+
+  } catch (error) {
+    console.error('❌ [Screen Share] Start error:', error);
+  }
+});
+
+// Screen Share Stopped
+socket.on('screen_share_stopped', (data) => {
+  try {
+    const { roomId, projectId, userId } = data;
+    const videoRoomName = `video_${roomId}`;
+
+    if (isDev) {
+      console.log(`🖥️ [Screen Share] ${socket.user.username} stopped sharing screen in ${videoRoomName}`);
+    }
+
+    // Notify other participants
+    socket.to(videoRoomName).emit('screen_share_stopped', {
+      userId,
+      roomId
+    });
+
+  } catch (error) {
+    console.error('❌ [Screen Share] Stop error:', error);
+  }
+});
+
     // ============== DISCONNECT ==============
     socket.on('disconnect', (reason) => {
       socket.rooms.forEach(room => {
