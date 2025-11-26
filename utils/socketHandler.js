@@ -518,8 +518,184 @@ const setupSocketHandlers = (io) => {
       socket.emit('online_users', { projectId, users: onlineUsers });
     });
 
+    socket.on('video_call_join', async (data) => {
+      try {
+        const { roomId, projectId, userId, username, avatarUrl } = data;
+        const videoRoomName = `video_${roomId}`;
+
+        // Join video room
+        socket.join(videoRoomName);
+
+        if (isDev) {
+          console.log(`📹 [Video Call] ${username} joined video room: ${videoRoomName}`);
+        }
+
+        // Notify existing participants
+        socket.to(videoRoomName).emit('video_participant_joined', {
+          userId,
+          username,
+          avatarUrl,
+          roomId
+        });
+
+        // Get list of current participants in video call
+        const participantsInCall = [];
+        const socketsInRoom = await io.in(videoRoomName).fetchSockets();
+        
+        for (const clientSocket of socketsInRoom) {
+          if (clientSocket.id !== socket.id && clientSocket.user) {
+            participantsInCall.push({
+              userId: clientSocket.userId,
+              username: clientSocket.user.username,
+              avatarUrl: clientSocket.user.avatar_url
+            });
+          }
+        }
+
+        // Send current participants to the new joiner
+        socket.emit('video_current_participants', {
+          participants: participantsInCall,
+          roomId
+        });
+
+      } catch (error) {
+        console.error('❌ [Video Call] Join error:', error);
+        socket.emit('error', { message: 'Failed to join video call' });
+      }
+    });
+
+    // Video Call: Offer
+    socket.on('video_offer', (data) => {
+      try {
+        const { roomId, projectId, targetUserId, offer } = data;
+        const videoRoomName = `video_${roomId}`;
+
+        if (isDev) {
+          console.log(`📹 [Video Call] Offer from ${socket.user.username} to user ${targetUserId}`);
+        }
+
+        // Find target socket and send offer
+        io.sockets.sockets.forEach((clientSocket) => {
+          if (clientSocket.userId === targetUserId && clientSocket.rooms.has(videoRoomName)) {
+            clientSocket.emit('video_offer', {
+              userId: socket.userId,
+              username: socket.user.username,
+              avatarUrl: socket.user.avatar_url,
+              offer,
+              roomId
+            });
+          }
+        });
+
+      } catch (error) {
+        console.error('❌ [Video Call] Offer error:', error);
+      }
+    });
+
+    // Video Call: Answer
+    socket.on('video_answer', (data) => {
+      try {
+        const { roomId, projectId, targetUserId, answer } = data;
+        const videoRoomName = `video_${roomId}`;
+
+        if (isDev) {
+          console.log(`📹 [Video Call] Answer from ${socket.user.username} to user ${targetUserId}`);
+        }
+
+        // Find target socket and send answer
+        io.sockets.sockets.forEach((clientSocket) => {
+          if (clientSocket.userId === targetUserId && clientSocket.rooms.has(videoRoomName)) {
+            clientSocket.emit('video_answer', {
+              userId: socket.userId,
+              username: socket.user.username,
+              answer,
+              roomId
+            });
+          }
+        });
+
+      } catch (error) {
+        console.error('❌ [Video Call] Answer error:', error);
+      }
+    });
+
+    // Video Call: ICE Candidate
+    socket.on('video_ice_candidate', (data) => {
+      try {
+        const { roomId, projectId, targetUserId, candidate } = data;
+        const videoRoomName = `video_${roomId}`;
+
+        // Find target socket and send ICE candidate
+        io.sockets.sockets.forEach((clientSocket) => {
+          if (clientSocket.userId === targetUserId && clientSocket.rooms.has(videoRoomName)) {
+            clientSocket.emit('video_ice_candidate', {
+              userId: socket.userId,
+              candidate,
+              roomId
+            });
+          }
+        });
+
+      } catch (error) {
+        console.error('❌ [Video Call] ICE candidate error:', error);
+      }
+    });
+
+    // Video Call: Leave
+    socket.on('video_call_leave', (data) => {
+      try {
+        const { roomId, projectId, userId } = data;
+        const videoRoomName = `video_${roomId}`;
+
+        if (isDev) {
+          console.log(`📹 [Video Call] ${socket.user.username} left video room: ${videoRoomName}`);
+        }
+
+        // Leave video room
+        socket.leave(videoRoomName);
+
+        // Notify other participants
+        socket.to(videoRoomName).emit('video_participant_left', {
+          userId,
+          roomId
+        });
+
+      } catch (error) {
+        console.error('❌ [Video Call] Leave error:', error);
+      }
+    });
+
+    // Video Call: Automatically leave on disconnect
+    const handleVideoDisconnect = () => {
+      // Find all video rooms this socket is in
+      socket.rooms.forEach(room => {
+        if (room.startsWith('video_')) {
+          const roomId = room.replace('video_', '');
+          
+          if (isDev) {
+            console.log(`📹 [Video Call] ${socket.user?.username} disconnected from video: ${room}`);
+          }
+
+          // Notify other participants
+          socket.to(room).emit('video_participant_left', {
+            userId: socket.userId,
+            roomId
+          });
+        }
+      });
+    };
+
     // ============== DISCONNECT ==============
     socket.on('disconnect', (reason) => {
+      socket.rooms.forEach(room => {
+        if (room.startsWith('video_')) {
+          const roomId = room.replace('video_', '');
+          socket.to(room).emit('video_participant_left', {
+            userId: socket.userId,
+            roomId
+          });
+        }
+      });
       const userId = socket.userId;
       const username = socket.user?.username;
 
