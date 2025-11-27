@@ -86,6 +86,37 @@ class UserConnectionManager {
 
 const connectionManager = new UserConnectionManager();
 
+const getActiveVideoCallsForProject = async (io, projectId) => {
+  const activeVideoCalls = [];
+  
+  // Get all sockets in the project room
+  const projectRoomName = `project_${projectId}`;
+  const socketsInProject = await io.in(projectRoomName).fetchSockets();
+  
+  // Track which rooms have active video calls
+  const videoRoomsMap = new Map(); // roomId -> count
+  
+  for (const socket of socketsInProject) {
+    // Check all rooms this socket is in
+    for (const room of socket.rooms) {
+      if (room.startsWith('video_')) {
+        const roomId = room.replace('video_', '');
+        videoRoomsMap.set(roomId, (videoRoomsMap.get(roomId) || 0) + 1);
+      }
+    }
+  }
+  
+  // Convert to array with participant counts
+  videoRoomsMap.forEach((participantCount, roomId) => {
+    activeVideoCalls.push({
+      roomId,
+      participantCount
+    });
+  });
+  
+  return activeVideoCalls;
+};
+
 // ✅ OPTIMIZATION: Cache for frequently accessed data
 const userCache = new Map(); // userId -> user data
 const USER_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
@@ -552,6 +583,12 @@ const setupSocketHandlers = (io) => {
           }
         }
 
+        const activeVideoCalls = await getActiveVideoCallsForProject(io, projectId);
+        io.to(`project_${projectId}`).emit('active_video_calls_updated', {
+          projectId,
+          activeVideoCalls
+        });
+
         // Send current participants to the new joiner
         socket.emit('video_current_participants', {
           participants: participantsInCall,
@@ -659,6 +696,14 @@ const setupSocketHandlers = (io) => {
           userId,
           roomId
         });
+
+        setTimeout(async () => {
+          const activeVideoCalls = await getActiveVideoCallsForProject(io, projectId);
+          io.to(`project_${projectId}`).emit('active_video_calls_updated', {
+            projectId,
+            activeVideoCalls
+          });
+        }, 100); // Small delay to ensure socket has left the room
 
       } catch (error) {
         console.error('❌ [Video Call] Leave error:', error);
