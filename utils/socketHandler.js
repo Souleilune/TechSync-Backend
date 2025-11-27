@@ -727,6 +727,34 @@ socket.on('screen_share_stopped', (data) => {
   }
 });
 
+socket.on('video_call_message', (data) => {
+  try {
+    const { roomId, projectId, userId, username, message } = data;
+    const videoRoomName = `video_${roomId}`;
+
+    if (isDev) {
+      console.log(`💬 [Video Call Chat] Message from ${username} in ${videoRoomName}`);
+    }
+
+    // Validate message
+    if (!message || !message.trim()) {
+      return;
+    }
+
+    // Broadcast to all participants in the video call
+    socket.to(videoRoomName).emit('video_call_message', {
+      userId,
+      username,
+      message: message.trim(),
+      timestamp: new Date().toISOString(),
+      roomId
+    });
+
+  } catch (error) {
+    console.error('❌ [Video Call Chat] Error:', error);
+  }
+});
+
     // ============== DISCONNECT ==============
     socket.on('disconnect', (reason) => {
       socket.rooms.forEach(room => {
