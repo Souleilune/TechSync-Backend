@@ -772,6 +772,29 @@ socket.on('screen_share_stopped', (data) => {
   }
 });
 
+socket.on('video_track_toggle', (data) => {
+  try {
+    const { roomId, projectId, userId, trackKind, enabled } = data;
+    const videoRoomName = `video_${roomId}`;
+
+    if (isDev) {
+      console.log(`🎥 [Video Track] ${socket.user.username} ${trackKind} ${enabled ? 'ON' : 'OFF'} in ${videoRoomName}`);
+    }
+
+    // Notify other participants in the video room
+    socket.to(videoRoomName).emit('video_track_toggle', {
+      userId,
+      username: socket.user.username,
+      trackKind, // 'video' or 'audio'
+      enabled, // true or false
+      roomId
+    });
+
+  } catch (error) {
+    console.error('❌ [Video Track Toggle] Error:', error);
+  }
+});
+
 socket.on('video_call_message', (data) => {
   try {
     const { roomId, projectId, userId, username, message } = data;
