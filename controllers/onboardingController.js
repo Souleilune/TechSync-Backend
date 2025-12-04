@@ -1,19 +1,73 @@
-// backend/controllers/onboardingController.js
+// backend/controllers/onboardingController.js - UPDATED WITH SKILL RATING INITIALIZATION
+const supabase = require('../config/supabase');
 
-const { createClient } = require('@supabase/supabase-js');
+/* ============================== Helper Functions ============================== */
 
-// Initialize Supabase client
-const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
+// Initialize skill ratings for user's programming languages
+const initializeSkillRatings = async (userId, languages) => {
+  try {
+    const ratingsData = languages.map(lang => {
+      // Determine initial rating based on proficiency level
+      let initialRating = 1200; // Default beginner rating
+      
+      switch(lang.proficiency_level) {
+        case 'beginner':
+          initialRating = 1200;
+          break;
+        case 'intermediate':
+          initialRating = 1400;
+          break;
+        case 'advanced':
+          initialRating = 1600;
+          break;
+        case 'expert':
+          initialRating = 1800;
+          break;
+        default:
+          initialRating = 1200;
+      }
 
-// Get all programming languages
+      return {
+        user_id: userId,
+        programming_language_id: lang.language_id,
+        rating: initialRating,
+        attempts: 0,
+        last_updated: new Date().toISOString()
+      };
+    });
+
+    // Insert skill ratings
+    const { error } = await supabase
+      .from('user_skill_ratings')
+      .upsert(ratingsData, {
+        onConflict: 'user_id,programming_language_id'
+      });
+
+    if (error) {
+      console.error('Error initializing skill ratings:', error);
+      // Don't throw - this is non-critical
+    } else {
+      console.log('Skill ratings initialized for user:', userId);
+    }
+  } catch (error) {
+    console.error('Error in initializeSkillRatings:', error);
+    // Don't throw - this is non-critical
+  }
+};
+
+/* ============================== Controller Functions ============================== */
+
+// Get all programming languages (public endpoint)
 const getProgrammingLanguages = async (req, res) => {
   try {
     const { data: languages, error } = await supabase
       .from('programming_languages')
-      .select('*')
-      .order('name');
+      .select('id, name, description, usage_count')
+      .eq('is_active', true)
+      .order('usage_count', { ascending: false });
 
     if (error) {
+      console.error('Error fetching programming languages:', error);
       return res.status(500).json({
         success: false,
         message: 'Failed to fetch programming languages',
@@ -23,7 +77,7 @@ const getProgrammingLanguages = async (req, res) => {
 
     res.json({
       success: true,
-      data: languages
+      data: languages || []
     });
 
   } catch (error) {
@@ -36,16 +90,17 @@ const getProgrammingLanguages = async (req, res) => {
   }
 };
 
-// Get all topics
+// Get all topics (public endpoint)
 const getTopics = async (req, res) => {
   try {
     const { data: topics, error } = await supabase
       .from('topics')
-      .select('*')
-      .order('category', { ascending: true })
+      .select('id, name, category, description')
+      .eq('is_active', true)
       .order('name', { ascending: true });
 
     if (error) {
+      console.error('Error fetching topics:', error);
       return res.status(500).json({
         success: false,
         message: 'Failed to fetch topics',
@@ -55,7 +110,7 @@ const getTopics = async (req, res) => {
 
     res.json({
       success: true,
-      data: topics
+      data: topics || []
     });
 
   } catch (error) {
@@ -68,43 +123,35 @@ const getTopics = async (req, res) => {
   }
 };
 
-// Save user's programming languages
+// Save user's programming languages (requires auth)
 const saveUserLanguages = async (req, res) => {
   try {
-    const { languages } = req.body;
     const userId = req.user.id;
-
-    console.log('Saving user languages for user:', userId);
-    console.log('Languages data:', languages);
+    const { languages } = req.body;
 
     if (!languages || !Array.isArray(languages) || languages.length === 0) {
       return res.status(400).json({
         success: false,
-        message: 'Languages array is required'
+        message: 'Languages array is required and must not be empty'
       });
     }
 
-    // First, delete existing user languages (in case of re-onboarding)
-    const { error: deleteError } = await supabase
+    // Delete existing languages
+    await supabase
       .from('user_programming_languages')
       .delete()
       .eq('user_id', userId);
 
-    if (deleteError) {
-      console.error('Error deleting existing languages:', deleteError);
-    }
-
-    // Insert new languages
+    // Prepare language data
     const languageData = languages.map(lang => ({
       user_id: userId,
       language_id: lang.language_id,
-      proficiency_level: lang.proficiency_level || 'intermediate',
+      proficiency_level: lang.proficiency_level || 'beginner',
       years_experience: lang.years_experience || 0,
       created_at: new Date().toISOString()
     }));
 
-    console.log('Inserting language data:', languageData);
-
+    // Insert new languages
     const { data: savedLanguages, error: insertError } = await supabase
       .from('user_programming_languages')
       .insert(languageData)
@@ -117,14 +164,17 @@ const saveUserLanguages = async (req, res) => {
       console.error('Error saving languages:', insertError);
       return res.status(500).json({
         success: false,
-        message: 'Failed to save languages',
+        message: 'Failed to save programming languages',
         error: insertError.message
       });
     }
 
+    // Initialize skill ratings
+    await initializeSkillRatings(userId, languages);
+
     res.json({
       success: true,
-      message: 'Languages saved successfully',
+      message: 'Programming languages saved successfully',
       data: savedLanguages
     });
 
@@ -138,43 +188,35 @@ const saveUserLanguages = async (req, res) => {
   }
 };
 
-// Save user's topics of interest
+// Save user's topics (requires auth)
 const saveUserTopics = async (req, res) => {
   try {
-    const { topics } = req.body;
     const userId = req.user.id;
-
-    console.log('Saving user topics for user:', userId);
-    console.log('Topics data:', topics);
+    const { topics } = req.body;
 
     if (!topics || !Array.isArray(topics) || topics.length === 0) {
       return res.status(400).json({
         success: false,
-        message: 'Topics array is required'
+        message: 'Topics array is required and must not be empty'
       });
     }
 
-    // First, delete existing user topics (in case of re-onboarding)
-    const { error: deleteError } = await supabase
+    // Delete existing topics
+    await supabase
       .from('user_topics')
       .delete()
       .eq('user_id', userId);
 
-    if (deleteError) {
-      console.error('Error deleting existing topics:', deleteError);
-    }
-
-    // Insert new topics
+    // Prepare topic data
     const topicData = topics.map(topic => ({
       user_id: userId,
       topic_id: topic.topic_id,
       interest_level: topic.interest_level || 'medium',
-      experience_level: topic.experience_level || 'beginner',
+      experience_level: 'beginner', // Default to beginner, updated via assessments
       created_at: new Date().toISOString()
     }));
 
-    console.log('Inserting topic data:', topicData);
-
+    // Insert new topics
     const { data: savedTopics, error: insertError } = await supabase
       .from('user_topics')
       .insert(topicData)
@@ -208,7 +250,7 @@ const saveUserTopics = async (req, res) => {
   }
 };
 
-// FIXED: Complete onboarding - save all data and mark user as onboarded
+// Complete onboarding - save all data and mark user as onboarded
 const completeOnboarding = async (req, res) => {
   try {
     const userId = req.user.id;
@@ -232,31 +274,15 @@ const completeOnboarding = async (req, res) => {
       });
     }
 
-    // Start transaction-like approach (multiple operations)
-    
     // 1. Delete existing user languages and topics (for re-onboarding)
-    const { error: deleteLanguagesError } = await supabase
-      .from('user_programming_languages')
-      .delete()
-      .eq('user_id', userId);
-
-    const { error: deleteTopicsError } = await supabase
-      .from('user_topics')
-      .delete()
-      .eq('user_id', userId);
-
-    if (deleteLanguagesError) {
-      console.error('Error deleting existing languages:', deleteLanguagesError);
-    }
-    if (deleteTopicsError) {
-      console.error('Error deleting existing topics:', deleteTopicsError);
-    }
+    await supabase.from('user_programming_languages').delete().eq('user_id', userId);
+    await supabase.from('user_topics').delete().eq('user_id', userId);
 
     // 2. Insert user's programming languages
     const languageData = languages.map(lang => ({
       user_id: userId,
       language_id: lang.language_id,
-      proficiency_level: lang.proficiency_level || 'intermediate',
+      proficiency_level: lang.proficiency_level || 'beginner',
       years_experience: lang.years_experience || 0,
       created_at: new Date().toISOString()
     }));
@@ -283,7 +309,7 @@ const completeOnboarding = async (req, res) => {
       user_id: userId,
       topic_id: topic.topic_id,
       interest_level: topic.interest_level || 'medium',
-      experience_level: topic.experience_level || 'beginner',
+      experience_level: 'beginner',
       created_at: new Date().toISOString()
     }));
 
@@ -304,13 +330,12 @@ const completeOnboarding = async (req, res) => {
       });
     }
 
-    // 4. Update user profile with years of experience and mark onboarding as complete
+    // 4. Update user profile with years of experience
     const { data: updatedUser, error: updateUserError } = await supabase
       .from('users')
       .update({
         years_experience: years_experience || 0,
-        updated_at: new Date().toISOString(),
-        // Note: We don't need a separate 'is_onboarded' field since we check languages/topics existence
+        updated_at: new Date().toISOString()
       })
       .eq('id', userId)
       .select(`
@@ -328,10 +353,13 @@ const completeOnboarding = async (req, res) => {
       });
     }
 
-    // 5. Return complete user profile with onboarding data
+    // 5. Initialize skill ratings based on proficiency levels
+    await initializeSkillRatings(userId, languages);
+
+    // 6. Return complete user profile with onboarding data
     const completeUser = {
       ...updatedUser,
-      needsOnboarding: false, // User has just completed onboarding
+      needsOnboarding: false,
       programming_languages: savedLanguages || [],
       topics: savedTopics || []
     };
@@ -361,8 +389,6 @@ const getUserOnboardingData = async (req, res) => {
   try {
     const userId = req.user.id;
 
-    console.log('Getting onboarding data for user:', userId);
-
     // Get user's programming languages
     const { data: languages, error: langError } = await supabase
       .from('user_programming_languages')
@@ -389,11 +415,22 @@ const getUserOnboardingData = async (req, res) => {
       console.error('Error fetching user topics:', topicError);
     }
 
+    // Get user's skill ratings
+    const { data: skillRatings, error: ratingsError } = await supabase
+      .from('user_skill_ratings')
+      .select('*')
+      .eq('user_id', userId);
+
+    if (ratingsError) {
+      console.error('Error fetching skill ratings:', ratingsError);
+    }
+
     res.json({
       success: true,
       data: {
         languages: languages || [],
-        topics: topics || []
+        topics: topics || [],
+        skillRatings: skillRatings || []
       }
     });
 
