@@ -220,4 +220,122 @@ router.post(
   logActivity
 );
 
+// Direct join project (no challenge required)
+router.post('/:projectId/join',
+  authMiddleware,
+  async (req, res) => {
+    try {
+      const { projectId } = req.params;
+      const userId = req.user.id;
+
+      // Check if user is already a member
+      const { data: existingMember } = await require('../config/supabase')
+        .from('project_members')
+        .select('id, status')
+        .eq('project_id', projectId)
+        .eq('user_id', userId)
+        .single();
+
+      if (existingMember) {
+        if (existingMember.status === 'removed') {
+          return res.status(403).json({
+            success: false,
+            message: 'You were removed from this project and cannot rejoin.'
+          });
+        }
+        return res.status(400).json({
+          success: false,
+          message: 'You are already a member of this project.'
+        });
+      }
+
+      // Check if project is full
+      const { data: project } = await require('../config/supabase')
+        .from('projects')
+        .select('current_members, maximum_members, title')
+        .eq('id', projectId)
+        .single();
+
+      if (!project) {
+        return res.status(404).json({
+          success: false,
+          message: 'Project not found.'
+        });
+      }
+
+      if (project.current_members >= project.maximum_members) {
+        return res.status(400).json({
+          success: false,
+          message: 'This project is full. No more members can join.'
+        });
+      }
+
+      // Add user to project
+      const { data: newMember, error: memberError } = await require('../config/supabase')
+        .from('project_members')
+        .insert({
+          project_id: projectId,
+          user_id: userId,
+          role: 'member',
+          status: 'active',
+          joined_at: new Date(),
+          contribution_score: 0
+        })
+        .select()
+        .single();
+
+      if (memberError) {
+        console.error('Error adding member:', memberError);
+        return res.status(500).json({
+          success: false,
+          message: 'Failed to join project.'
+        });
+      }
+
+      // Increment project member count
+      await require('../config/supabase')
+        .rpc('increment_project_members', { project_id: projectId });
+
+      // Create notification for project owner
+      const { data: projectOwner } = await require('../config/supabase')
+        .from('projects')
+        .select('owner_id')
+        .eq('id', projectId)
+        .single();
+
+      if (projectOwner) {
+        await require('../config/supabase')
+          .from('notifications')
+          .insert({
+            user_id: projectOwner.owner_id,
+            project_id: projectId,
+            notification_type: 'member_joined',
+            title: 'New Member Joined',
+            message: `A new member has joined ${project.title}`,
+            is_read: false
+          });
+      }
+
+      res.json({
+        success: true,
+        message: `Successfully joined ${project.title}!`,
+        data: {
+          member: newMember,
+          project: {
+            id: projectId,
+            title: project.title
+          }
+        }
+      });
+
+    } catch (error) {
+      console.error('Error in direct join:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Internal server error'
+      });
+    }
+  }
+);
+
 module.exports = router;
