@@ -119,6 +119,67 @@ const requestAddLanguage = async (req, res) => {
   }
 };
 
+const retakeAssessment = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { language_id } = req.params;
+    const { challenge_id, attempt_id, new_proficiency_level } = req.body;
+
+    // Verify the attempt
+    const { data: attempt } = await supabase
+      .from('challenge_attempts')
+      .select('*')
+      .eq('id', attempt_id)
+      .eq('user_id', userId)
+      .eq('challenge_id', challenge_id)
+      .single();
+
+    if (!attempt || attempt.status !== 'passed') {
+      return res.status(400).json({
+        success: false,
+        message: 'Assessment not passed'
+      });
+    }
+
+    // Update the user's language proficiency
+    const { data: updated, error } = await supabase
+      .from('user_programming_languages')
+      .update({
+        proficiency_level: new_proficiency_level,
+        updated_at: new Date().toISOString()
+      })
+      .eq('user_id', userId)
+      .eq('language_id', language_id)
+      .select(`
+        *,
+        programming_languages (id, name, description)
+      `)
+      .single();
+
+    if (error) {
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to update proficiency level',
+        error: error.message
+      });
+    }
+
+    res.json({
+      success: true,
+      message: 'Proficiency level updated successfully!',
+      data: updated
+    });
+
+  } catch (error) {
+    console.error('Retake assessment error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error',
+      error: error.message
+    });
+  }
+};
+
 /**
  * Verify challenge completion and add language to user profile
  */
@@ -645,5 +706,6 @@ module.exports = {
   addTopic,
   removeTopic,
   updateLanguageProficiency,
-  updateTopicInterest
+  updateTopicInterest,
+  retakeAssessment
 };

@@ -151,4 +151,15 @@ router.put('/topics/:topic_id',
   updateTopicInterest
 );
 
+router.post('/languages/:language_id/retake',
+  [
+    param('language_id').isInt({ min: 1 }),
+    body('challenge_id').isInt({ min: 1 }),
+    body('attempt_id').isInt({ min: 1 }),
+    body('new_proficiency_level').isIn(['beginner', 'intermediate', 'advanced', 'expert'])
+  ],
+  handleValidationErrors,
+  retakeAssessment
+);
+
 module.exports = router;
