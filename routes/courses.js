@@ -379,5 +379,36 @@ router.put('/:courseId/enrollment/progress', authMiddleware, async (req, res) =>
   }
 });
 
+/**
+ * DELETE /api/courses/:courseId/enrollment
+ * Unenroll from a course (delete enrollment but keep progress history)
+ */
+router.delete('/:courseId/enrollment', authMiddleware, async (req, res) => {
+  try {
+    const { courseId } = req.params;
+    const userId = req.user.id;
+
+    // Delete the enrollment
+    const { error } = await supabase
+      .from('user_course_enrollments')
+      .delete()
+      .eq('user_id', userId)
+      .eq('course_id', courseId);
+
+    if (error) throw error;
+
+    res.json({
+      success: true,
+      message: 'Successfully unenrolled from course'
+    });
+
+  } catch (error) {
+    console.error('Error unenrolling from course:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to unenroll from course'
+    });
+  }
+});
 
 module.exports = router;
