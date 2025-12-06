@@ -71,8 +71,18 @@ async function fetchInternalCourses(languageId, languageName, difficulty, limit 
   try {
     console.log(`🎓 Fetching internal courses for: ${languageName} (ID: ${languageId}), difficulty: ${difficulty}`);
 
-    // ✅ COMPLETE language mapping for all 55 languages
+    // ✅ UPDATED: More specific language mapping with exact match indicators
     const languageMap = {
+      // Special handling for single-letter languages
+      'r': {
+        terms: ['Statistical', 'Data Science', 'Data Analysis'],
+        exactTitle: 'R Programming'  // ✅ Must match "R Programming" exactly in title
+      },
+      'c': {
+        terms: ['C Programming', 'C Language'],
+        exactTitle: 'C Programming'
+      },
+      
       // Core Programming Languages
       'javascript': ['JavaScript', 'JS', 'ECMAScript'],
       'python': ['Python'],
@@ -81,7 +91,6 @@ async function fetchInternalCourses(languageId, languageName, difficulty, limit 
       'cpp': ['C++', 'CPP'],
       'c#': ['C#', 'CSharp'],
       'csharp': ['C#', 'CSharp'],
-      'c': ['C'],
       'typescript': ['TypeScript', 'TS'],
       'ruby': ['Ruby'],
       'go': ['Go', 'Golang'],
@@ -92,7 +101,6 @@ async function fetchInternalCourses(languageId, languageName, difficulty, limit 
       'kotlin': ['Kotlin', 'Android'],
       'dart': ['Dart', 'Flutter'],
       'scala': ['Scala'],
-      'r': ['R', 'Statistical', 'Data Science'], // ✅ ADDED R
       'matlab': ['MATLAB'],
       'perl': ['Perl'],
       'lua': ['Lua'],
@@ -103,7 +111,7 @@ async function fetchInternalCourses(languageId, languageName, difficulty, limit 
       'clojure': ['Clojure'],
       'objective-c': ['Objective-C', 'Objective C', 'iOS'],
       
-      // Frameworks (JavaScript-based)
+      // Frameworks
       'react': ['React', 'React.js', 'ReactJS'],
       'react.js': ['React', 'React.js', 'ReactJS'],
       'vue': ['Vue', 'Vue.js', 'VueJS'],
@@ -117,26 +125,14 @@ async function fetchInternalCourses(languageId, languageName, difficulty, limit 
       'express.js': ['Express', 'Express.js', 'ExpressJS'],
       'react native': ['React Native', 'Mobile'],
       'ionic': ['Ionic', 'Mobile'],
-      
-      // Python Frameworks
       'django': ['Django', 'Python', 'Web'],
       'flask': ['Flask', 'Python', 'Web'],
-      
-      // Java Frameworks
       'spring': ['Spring', 'Java', 'Spring Boot'],
-      
-      // PHP Frameworks
       'laravel': ['Laravel', 'PHP'],
-      
-      // Ruby Frameworks
       'ruby on rails': ['Ruby on Rails', 'Rails', 'Ruby'],
       'rails': ['Ruby on Rails', 'Rails', 'Ruby'],
-      
-      // C# Frameworks
       'asp.net': ['ASP.NET', '.NET', 'C#'],
       'xamarin': ['Xamarin', 'Mobile', 'C#'],
-      
-      // Dart Frameworks
       'flutter': ['Flutter', 'Dart', 'Mobile'],
       
       // Markup & Styling
@@ -166,12 +162,8 @@ async function fetchInternalCourses(languageId, languageName, difficulty, limit 
       'webassembly': ['WebAssembly', 'WASM', 'Web']
     };
 
-    // Get search terms or use language name as fallback
-    const searchTerms = languageMap[languageName.toLowerCase()] || [languageName];
+    const langConfig = languageMap[languageName.toLowerCase()];
     
-    console.log(`   🔍 Search terms for ${languageName}:`, searchTerms);
-    
-    // Build query to find courses matching the language
     let query = supabase
       .from('courses')
       .select(`
@@ -200,12 +192,27 @@ async function fetchInternalCourses(languageId, languageName, difficulty, limit 
       query = query.in('level', ['Intermediate', 'Advanced']);
     }
 
-    // Search in title or description for language keywords
-    const orConditions = searchTerms
-      .map(term => `title.ilike.%${term}%,description.ilike.%${term}%,category.ilike.%${term}%`)
-      .join(',');
+    // ✅ SPECIAL HANDLING: For languages with exactTitle, use exact match first
+    if (langConfig && langConfig.exactTitle) {
+      console.log(`   🎯 Using exact title match for ${languageName}: "${langConfig.exactTitle}"`);
+      
+      // Search for exact title match (e.g., "R Programming")
+      query = query.ilike('title', `%${langConfig.exactTitle}%`);
+      
+    } else {
+      // Regular search with terms
+      const searchTerms = Array.isArray(langConfig) ? langConfig : (langConfig?.terms || [languageName]);
+      
+      console.log(`   🔍 Search terms for ${languageName}:`, searchTerms);
+      
+      // Create OR conditions for title, description, category
+      const orConditions = searchTerms
+        .map(term => `title.ilike.%${term}%,description.ilike.%${term}%,category.ilike.%${term}%`)
+        .join(',');
+      
+      query = query.or(orConditions);
+    }
     
-    query = query.or(orConditions);
     query = query.limit(limit);
 
     const { data: courses, error } = await query;
@@ -216,14 +223,38 @@ async function fetchInternalCourses(languageId, languageName, difficulty, limit 
     }
 
     console.log(`   ✅ Found ${courses?.length || 0} internal courses for ${languageName}`);
+    
+    // ✅ ADDITIONAL FILTER: For single-letter languages, verify the title actually contains the language
+    let filteredCourses = courses || [];
+    
+    if (langConfig && langConfig.exactTitle) {
+      filteredCourses = courses.filter(course => {
+        // Must have the exact title or the language name as a standalone word
+        const titleLower = course.title.toLowerCase();
+        const exactMatch = titleLower.includes(langConfig.exactTitle.toLowerCase());
+        
+        // Also check for language name as standalone word (not part of another word)
+        const standaloneMatch = new RegExp(`\\b${languageName}\\b`, 'i').test(course.title);
+        
+        const matches = exactMatch || standaloneMatch;
+        
+        if (!matches) {
+          console.log(`   ⚠️ Filtered out: "${course.title}" (doesn't match exact criteria)`);
+        }
+        
+        return matches;
+      });
+      
+      console.log(`   ✅ After exact filtering: ${filteredCourses.length} courses for ${languageName}`);
+    }
 
     // Transform to recommendation format
-    return (courses || []).map(course => ({
+    return (filteredCourses || []).map(course => ({
       provider: RESOURCE_PROVIDERS.INTERNAL_COURSE,
       type: 'course',
       title: course.title,
       description: course.short_description || course.description,
-      url: `/courses/${course.id}/learn`, // Frontend route
+      url: `/courses/${course.id}/learn`,
       courseId: course.id,
       courseSlug: course.slug,
       difficulty: course.level,
