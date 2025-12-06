@@ -37,6 +37,7 @@ const usersRoutes = require('./routes/users');
 const timelineRoutes = require('./routes/timeline');
 const recommendationsRoutes = require('./routes/recommendations');
 const coursesRoutes = require('./routes/courses');
+const adminCoursesRoutes = require('./routes/adminCourses');
 
 const app = express();
 
@@ -301,6 +302,7 @@ app.use('/api/github', githubRoutes);
 
 // 7. Admin routes
 app.use('/api/admin', adminRoutes);
+app.use('/api/admin/courses', adminCoursesRoutes);
 
 // ============== HEALTH CHECK ==============
 app.get('/health', (req, res) => {
