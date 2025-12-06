@@ -60,35 +60,116 @@ const LANGUAGE_RESOURCES = {
  * @param {string} difficulty - beginner, intermediate, advanced
  * @param {number} limit - Number of courses to return
  */
+/**
+ * Fetch internal courses from Supabase database
+ * @param {number} languageId - Programming language ID
+ * @param {string} languageName - Programming language name
+ * @param {string} difficulty - beginner, intermediate, advanced
+ * @param {number} limit - Number of courses to return
+ */
 async function fetchInternalCourses(languageId, languageName, difficulty, limit = 3) {
   try {
     console.log(`🎓 Fetching internal courses for: ${languageName} (ID: ${languageId}), difficulty: ${difficulty}`);
 
-    // Map language names to course search terms
+    // ✅ COMPLETE language mapping for all 55 languages
     const languageMap = {
+      // Core Programming Languages
       'javascript': ['JavaScript', 'JS', 'ECMAScript'],
       'python': ['Python'],
       'java': ['Java'],
-      'typescript': ['TypeScript', 'TS'],
-      'react': ['React', 'React.js', 'ReactJS'],
-      'node': ['Node', 'Node.js', 'NodeJS'],
-      'angular': ['Angular'],
-      'vue': ['Vue', 'Vue.js', 'VueJS'],
-      'php': ['PHP'],
-      'ruby': ['Ruby'],
-      'go': ['Go', 'Golang'],
-      'rust': ['Rust'],
       'c++': ['C++', 'CPP'],
       'cpp': ['C++', 'CPP'],
       'c#': ['C#', 'CSharp'],
+      'csharp': ['C#', 'CSharp'],
+      'c': ['C'],
+      'typescript': ['TypeScript', 'TS'],
+      'ruby': ['Ruby'],
+      'go': ['Go', 'Golang'],
+      'golang': ['Go', 'Golang'],
+      'rust': ['Rust'],
+      'php': ['PHP'],
       'swift': ['Swift', 'iOS'],
       'kotlin': ['Kotlin', 'Android'],
+      'dart': ['Dart', 'Flutter'],
+      'scala': ['Scala'],
+      'r': ['R', 'Statistical', 'Data Science'], // ✅ ADDED R
+      'matlab': ['MATLAB'],
+      'perl': ['Perl'],
+      'lua': ['Lua'],
+      'haskell': ['Haskell'],
+      'elixir': ['Elixir'],
+      'f#': ['F#', 'FSharp'],
+      'fsharp': ['F#', 'FSharp'],
+      'clojure': ['Clojure'],
+      'objective-c': ['Objective-C', 'Objective C', 'iOS'],
+      
+      // Frameworks (JavaScript-based)
+      'react': ['React', 'React.js', 'ReactJS'],
+      'react.js': ['React', 'React.js', 'ReactJS'],
+      'vue': ['Vue', 'Vue.js', 'VueJS'],
+      'vue.js': ['Vue', 'Vue.js', 'VueJS'],
+      'angular': ['Angular', 'AngularJS'],
+      'node': ['Node', 'Node.js', 'NodeJS', 'Backend'],
+      'node.js': ['Node', 'Node.js', 'NodeJS'],
+      'next': ['Next', 'Next.js', 'NextJS'],
+      'next.js': ['Next', 'Next.js', 'NextJS'],
+      'express': ['Express', 'Express.js', 'ExpressJS'],
+      'express.js': ['Express', 'Express.js', 'ExpressJS'],
+      'react native': ['React Native', 'Mobile'],
+      'ionic': ['Ionic', 'Mobile'],
+      
+      // Python Frameworks
+      'django': ['Django', 'Python', 'Web'],
+      'flask': ['Flask', 'Python', 'Web'],
+      
+      // Java Frameworks
+      'spring': ['Spring', 'Java', 'Spring Boot'],
+      
+      // PHP Frameworks
+      'laravel': ['Laravel', 'PHP'],
+      
+      // Ruby Frameworks
+      'ruby on rails': ['Ruby on Rails', 'Rails', 'Ruby'],
+      'rails': ['Ruby on Rails', 'Rails', 'Ruby'],
+      
+      // C# Frameworks
+      'asp.net': ['ASP.NET', '.NET', 'C#'],
+      'xamarin': ['Xamarin', 'Mobile', 'C#'],
+      
+      // Dart Frameworks
+      'flutter': ['Flutter', 'Dart', 'Mobile'],
+      
+      // Markup & Styling
+      'html': ['HTML', 'Web', 'Markup'],
+      'css': ['CSS', 'Styling', 'Web'],
+      'scss': ['SCSS', 'Sass', 'CSS'],
+      'sass': ['Sass', 'SCSS', 'CSS'],
+      'scss/sass': ['SCSS', 'Sass', 'CSS'],
+      'tailwind': ['Tailwind', 'CSS', 'Tailwind CSS'],
+      'tailwind css': ['Tailwind', 'CSS', 'Tailwind CSS'],
+      
+      // Databases
       'sql': ['SQL', 'Database'],
-      'html': ['HTML', 'Web'],
-      'css': ['CSS', 'Styling']
+      'mongodb': ['MongoDB', 'NoSQL', 'Database'],
+      'postgresql': ['PostgreSQL', 'Postgres', 'SQL'],
+      'mysql': ['MySQL', 'SQL', 'Database'],
+      'graphql': ['GraphQL', 'API', 'Query'],
+      
+      // DevOps Tools
+      'docker': ['Docker', 'Container', 'DevOps'],
+      'kubernetes': ['Kubernetes', 'K8s', 'DevOps'],
+      'terraform': ['Terraform', 'Infrastructure', 'IaC'],
+      'ansible': ['Ansible', 'Automation', 'DevOps'],
+      
+      // Specialized
+      'solidity': ['Solidity', 'Blockchain', 'Ethereum'],
+      'webassembly': ['WebAssembly', 'WASM', 'Web']
     };
 
+    // Get search terms or use language name as fallback
     const searchTerms = languageMap[languageName.toLowerCase()] || [languageName];
+    
+    console.log(`   🔍 Search terms for ${languageName}:`, searchTerms);
     
     // Build query to find courses matching the language
     let query = supabase
@@ -130,11 +211,11 @@ async function fetchInternalCourses(languageId, languageName, difficulty, limit 
     const { data: courses, error } = await query;
 
     if (error) {
-      console.error('Error fetching internal courses:', error);
+      console.error('   ❌ Error fetching internal courses:', error);
       return [];
     }
 
-    console.log(`✅ Found ${courses?.length || 0} internal courses`);
+    console.log(`   ✅ Found ${courses?.length || 0} internal courses for ${languageName}`);
 
     // Transform to recommendation format
     return (courses || []).map(course => ({
@@ -156,15 +237,16 @@ async function fetchInternalCourses(languageId, languageName, difficulty, limit 
       metadata: {
         estimatedTime: `${course.estimated_duration_hours}h`,
         format: 'Interactive Course',
-        isFree: true // Adjust based on your business model
+        isFree: true
       }
     }));
 
   } catch (error) {
-    console.error('Error in fetchInternalCourses:', error);
+    console.error('   ❌ Error in fetchInternalCourses:', error);
     return [];
   }
 }
+
 
 /**
  * Fetch resources from Dev.to
