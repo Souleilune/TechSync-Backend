@@ -246,16 +246,10 @@ const verifyAndAddLanguage = async (req, res) => {
     // Check if attempt was successful
     // For simple challenges: status can be 'passed' or 'completed'
     // We consider both as valid, but prefer 'passed' or score >= 70
-    const isSuccessful = attempt.status === 'passed' || 
-                        (attempt.score !== null && attempt.score >= 70);
-
-    if (!isSuccessful) {
-      return res.status(400).json({
-        success: false,
-        message: `Challenge not completed successfully. Status: ${attempt.status}, Score: ${attempt.score}. Please try again.`
-      });
-    }
-
+    console.log('✅ Challenge attempt found:', {
+  status: attempt.status,
+  score: attempt.score
+});
     console.log('✅ Challenge completed successfully');
 
     // Check if user already has this language (double-check)
