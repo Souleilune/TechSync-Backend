@@ -1,7 +1,7 @@
-// backend/routes/courses.js - FIXED
+// backend/routes/courses.js - FIXED WITH SORTING
 const express = require('express');
 const router = express.Router();
-const supabase = require('../config/supabase'); // FIXED: Changed from database to supabase
+const supabase = require('../config/supabase');
 const authMiddleware = require('../middleware/auth');
 
 /**
@@ -113,19 +113,17 @@ router.get('/my-courses', authMiddleware, async (req, res) => {
 /**
  * GET /api/courses/:courseId
  * Get a single course with full details
+ * ✅ FIXED: Now sorts modules and lessons by order_index
  */
 router.get('/:courseId', async (req, res) => {
   try {
     const { courseId } = req.params;
 
+    // Fetch course with modules and lessons
     const { data: course, error } = await supabase
       .from('courses')
       .select(`
         *,
-        course_modules (
-          *,
-          course_lessons (*)
-        ),
         course_reviews (
           *,
           users (username, avatar_url)
@@ -143,6 +141,36 @@ router.get('/:courseId', async (req, res) => {
       });
     }
 
+    // ✅ Fetch modules separately with proper ordering
+    const { data: modules, error: modulesError } = await supabase
+      .from('course_modules')
+      .select('*')
+      .eq('course_id', courseId)
+      .order('order_index', { ascending: true }); // ✅ Sort by order_index
+
+    if (modulesError) throw modulesError;
+
+    // ✅ Fetch lessons for each module with proper ordering
+    const modulesWithLessons = await Promise.all(
+      (modules || []).map(async (module) => {
+        const { data: lessons, error: lessonsError } = await supabase
+          .from('course_lessons')
+          .select('*')
+          .eq('module_id', module.id)
+          .order('order_index', { ascending: true }); // ✅ Sort by order_index
+
+        if (lessonsError) {
+          console.error('Error fetching lessons:', lessonsError);
+          return { ...module, course_lessons: [] };
+        }
+
+        return {
+          ...module,
+          course_lessons: lessons || []
+        };
+      })
+    );
+
     // Get enrollment count
     const { count: enrollmentCount } = await supabase
       .from('user_course_enrollments')
@@ -159,6 +187,7 @@ router.get('/:courseId', async (req, res) => {
       success: true,
       course: {
         ...course,
+        course_modules: modulesWithLessons, // ✅ Now properly sorted
         enrollment_count: enrollmentCount || 0,
         average_rating: parseFloat(avgRating),
         review_count: ratings.length
@@ -229,12 +258,14 @@ router.post('/:courseId/enroll', authMiddleware, async (req, res) => {
 /**
  * GET /api/courses/:courseId/progress
  * Get user's progress in a course
+ * ✅ FIXED: Now properly fetches and sorts modules with lessons
  */
 router.get('/:courseId/progress', authMiddleware, async (req, res) => {
   try {
     const { courseId } = req.params;
     const userId = req.user.id;
 
+    // Get enrollment
     const { data: enrollment, error: enrollmentError } = await supabase
       .from('user_course_enrollments')
       .select('*')
@@ -249,20 +280,52 @@ router.get('/:courseId/progress', authMiddleware, async (req, res) => {
       });
     }
 
-    const { data: lessons } = await supabase
-      .from('course_lessons')
-      .select(`
-        *,
-        course_modules!inner(course_id),
-        user_lesson_progress!left(status, completed_at)
-      `)
-      .eq('course_modules.course_id', courseId)
-      .eq('user_lesson_progress.user_id', userId);
+    // ✅ Get modules sorted by order_index
+    const { data: modules, error: modulesError } = await supabase
+      .from('course_modules')
+      .select('*')
+      .eq('course_id', courseId)
+      .order('order_index', { ascending: true });
+
+    if (modulesError) throw modulesError;
+
+    // ✅ Get lessons with progress for each module, sorted by order_index
+    const modulesWithLessons = await Promise.all(
+      (modules || []).map(async (module) => {
+        const { data: lessons, error: lessonsError } = await supabase
+          .from('course_lessons')
+          .select(`
+            *,
+            user_lesson_progress!left(
+              status, 
+              completed_at,
+              started_at
+            )
+          `)
+          .eq('module_id', module.id)
+          .eq('user_lesson_progress.user_id', userId)
+          .order('order_index', { ascending: true }); // ✅ Sort by order_index
+
+        if (lessonsError) {
+          console.error('Error fetching lessons:', lessonsError);
+          return { ...module, course_lessons: [] };
+        }
+
+        return {
+          ...module,
+          course_lessons: lessons || []
+        };
+      })
+    );
+
+    // Flatten all lessons for backward compatibility
+    const allLessons = modulesWithLessons.flatMap(m => m.course_lessons || []);
 
     res.json({
       success: true,
       enrollment,
-      lessons
+      lessons: allLessons,
+      modules: modulesWithLessons // ✅ Include properly sorted modules
     });
 
   } catch (error) {
