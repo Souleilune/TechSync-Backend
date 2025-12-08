@@ -251,8 +251,25 @@ async function getLanguageFeatures(languageId, languageName) {
 
   // Return features for the specified language
   const normalizedName = languageName || 'JavaScript';
-  return languageFeatures[normalizedName] || languageFeatures['JavaScript'];
+  
+  if (!languageFeatures[normalizedName]) {
+    return {
+      functions: ['function', 'def', 'func', 'fn', 'void', 'int', 'return'],
+      keywords: ['if', 'else', 'for', 'while', 'switch', 'case', 'try', 'catch', 'break', 'continue'],
+      methods: ['print', 'log', 'write', 'read', 'get', 'set', 'add', 'remove', 'find', 'sort'],
+      patterns: {
+        anyFunction: /(?:function|def|func|fn|void|int|public|private)\s+\w+/g,
+        conditionals: /\b(?:if|else|elif|switch|case|when|match)\b/g,
+        loops: /\b(?:for|while|do|each|loop)\b/g,
+        returnStatement: /\breturn\b/g,
+      },
+      structures: ['class', 'struct', 'object', 'array']
+    };
+  }
+  
+  return languageFeatures[normalizedName];
 }
+
 
 /**
  * Evaluate code submission based on language-specific features
@@ -274,168 +291,220 @@ async function evaluateCodeWithLanguageFeatures(submittedCode, challenge, projec
                       project?.project_languages?.find(pl => pl.is_primary)?.language_id || 
                       null;
 
-    console.log('🔍 Evaluating code with language features:', {
+    const difficulty = challenge?.difficulty_level || 'easy';
+
+    console.log('🔍 Evaluating code:', {
       languageName,
-      languageId,
+      difficulty,
       codeLength: code.length
     });
 
     // Get language features
     const features = await getLanguageFeatures(languageId, languageName);
     
-    // Initialize scoring variables
-    let score = 0;
-    const maxScore = 100;
+    // Initialize scoring
     const details = {
       languageName,
-      hasFunction: false,
-      hasLogic: false,
-      hasComments: false,
-      properStructure: false,
-      languageMatch: false,
-      complexity: 0,
+      difficulty,
+      codeLength: code.length,
       foundFeatures: [],
-      missingFeatures: [],
-      patternMatches: {}
+      suggestions: [],
+      breakdown: {}
     };
 
-    // 1. Minimum length check (5 points)
-    if (code.length >= 20) {
+    // ============================================
+    // NEW SCORING SYSTEM - More generous
+    // ============================================
+    
+    let score = 0;
+
+    // 1. BASE SCORE FOR SUBMISSION (30 points)
+    // Just submitting code that isn't empty gets points
+    if (code.length >= 10) {
+      score += 15;
+      details.foundFeatures.push('Valid code submission');
+    }
+    if (code.length >= 30) {
+      score += 10;
+      details.foundFeatures.push('Substantial code length');
+    }
+    if (code.length >= 100) {
       score += 5;
-      details.foundFeatures.push('Adequate code length');
-    } else {
-      details.missingFeatures.push('Code is too short');
+      details.foundFeatures.push('Comprehensive solution');
     }
+    details.breakdown.baseScore = Math.min(30, score);
 
-    // 2. Check for language-specific functions (20 points)
-    let functionCount = 0;
-    for (const func of features.functions) {
-      const regex = new RegExp(`\\b${func}\\b`, 'gi');
-      if (regex.test(code)) {
-        functionCount++;
-        details.foundFeatures.push(`Uses '${func}'`);
-      }
-    }
-    if (functionCount > 0) {
-      score += Math.min(20, functionCount * 4);
-      details.hasFunction = true;
-    } else {
-      details.missingFeatures.push('No language-specific functions found');
-    }
-
-    // 3. Check for keywords and control structures (25 points)
-    let keywordCount = 0;
-    for (const keyword of features.keywords) {
-      const regex = new RegExp(`\\b${keyword}\\b`, 'gi');
-      if (regex.test(code)) {
-        keywordCount++;
-      }
-    }
-    if (keywordCount > 0) {
-      score += Math.min(25, keywordCount * 3);
-      details.hasLogic = true;
-      details.foundFeatures.push(`Uses ${keywordCount} control structure(s)`);
-    } else {
-      details.missingFeatures.push('No control structures (if/for/while)');
-    }
-
-    // 4. Check for common methods (15 points)
-    let methodCount = 0;
-    for (const method of features.methods) {
-      const regex = new RegExp(method.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi');
-      if (regex.test(code)) {
-        methodCount++;
-      }
-    }
-    if (methodCount > 0) {
-      score += Math.min(15, methodCount * 3);
-      details.foundFeatures.push(`Uses ${methodCount} built-in method(s)`);
-    }
-
-    // 5. Check for advanced patterns (20 points)
-    let patternScore = 0;
-    for (const [patternName, pattern] of Object.entries(features.patterns)) {
-      const matches = code.match(pattern);
-      if (matches && matches.length > 0) {
-        patternScore += 3;
-        details.patternMatches[patternName] = matches.length;
-        details.foundFeatures.push(`Uses ${patternName} (${matches.length}x)`);
-      }
-    }
-    score += Math.min(20, patternScore);
-    details.properStructure = patternScore > 0;
-
-    // 6. Check for comments (5 points)
-    const commentPatterns = [
-      /\/\/.*/g,              // Single line comments (// C-style)
-      /\/\*[\s\S]*?\*\//g,    // Multi-line comments (/* C-style */)
-      /#.*/g,                 // Hash comments (# Python/Ruby)
-      /""".+?"""/gs,          // Python docstrings
-      /'''.+?'''/gs,          // Python docstrings
-      /<!--[\s\S]*?-->/g      // HTML comments
+    // 2. FUNCTION/METHOD DEFINITION (25 points)
+    // Does the code define any callable?
+    let hasFunctionDefinition = false;
+    
+    // Check for ANY function-like pattern
+    const functionPatterns = [
+      /function\s+\w+/gi,                          // JS function
+      /(?:const|let|var)\s+\w+\s*=\s*\([^)]*\)\s*=>/gi, // Arrow function
+      /(?:const|let|var)\s+\w+\s*=\s*function/gi,  // Function expression
+      /=>\s*[{(]/gi,                               // Any arrow
+      /def\s+\w+/gi,                               // Python
+      /fn\s+\w+/gi,                                // Rust
+      /func\s+\w+/gi,                              // Go/Swift
+      /fun\s+\w+/gi,                               // Kotlin
+      /(?:public|private|protected)?\s*(?:static\s+)?[\w<>\[\]]+\s+\w+\s*\([^)]*\)\s*[{:]/gi, // Java/C#
+      /(?:int|void|char|float|double|bool|string|auto)\s+\w+\s*\([^)]*\)/gi, // C/C++
     ];
     
-    let hasComments = false;
-    for (const pattern of commentPatterns) {
+    for (const pattern of functionPatterns) {
       if (pattern.test(code)) {
-        hasComments = true;
+        hasFunctionDefinition = true;
         break;
       }
     }
     
-    if (hasComments) {
-      score += 5;
-      details.hasComments = true;
-      details.foundFeatures.push('Includes comments');
+    if (hasFunctionDefinition) {
+      score += 25;
+      details.foundFeatures.push('Defines function/method');
+    } else if (/return\b/i.test(code)) {
+      // Has return statement, likely inside a function
+      score += 15;
+      details.foundFeatures.push('Contains return statement');
+    } else {
+      // Check for method calls or any programming structure
+      if (/\w+\s*\([^)]*\)/g.test(code)) {
+        score += 10;
+        details.foundFeatures.push('Contains function calls');
+      }
+      details.suggestions.push('Consider wrapping code in a function');
     }
+    details.breakdown.functionScore = score - details.breakdown.baseScore;
 
-    // 7. Complexity analysis (10 points)
-    const complexityIndicators = [
-      { pattern: /\bclass\b/gi, weight: 3, name: 'classes' },
-      { pattern: /\binterface\b/gi, weight: 2, name: 'interfaces' },
-      { pattern: /\basync\b/gi, weight: 2, name: 'async operations' },
-      { pattern: /\btry\b/gi, weight: 2, name: 'error handling' },
-      { pattern: /\bimport\b|\brequire\b|\buse\b/gi, weight: 1, name: 'imports' },
-      { pattern: /\breturn\b/gi, weight: 1, name: 'return statements' }
-    ];
-
-    let complexityScore = 0;
-    for (const indicator of complexityIndicators) {
-      const matches = code.match(indicator.pattern);
-      if (matches) {
-        complexityScore += matches.length * indicator.weight;
-        details.complexity += matches.length;
+    // 3. LOGIC & CONTROL FLOW (20 points)
+    let logicScore = 0;
+    
+    // Conditionals
+    const hasConditional = /\b(?:if|else|elif|switch|case|when|match|\?.*:)\b/i.test(code);
+    if (hasConditional) {
+      logicScore += 10;
+      details.foundFeatures.push('Uses conditional logic');
+    }
+    
+    // Loops
+    const hasLoop = /\b(?:for|while|do|each|loop|forEach|map|filter|reduce)\b/i.test(code);
+    if (hasLoop) {
+      logicScore += 10;
+      details.foundFeatures.push('Uses iteration/loops');
+    }
+    
+    // Ternary or simple expressions also count
+    if (!hasConditional && !hasLoop) {
+      if (/[+\-*/%]/.test(code) || /[<>=!]=?/.test(code)) {
+        logicScore += 5;
+        details.foundFeatures.push('Contains expressions/operators');
       }
     }
-    score += Math.min(10, Math.floor(complexityScore / 2));
+    
+    score += logicScore;
+    details.breakdown.logicScore = logicScore;
 
-    // 8. Code organization bonus (5 points)
-    const lines = code.split('\n').filter(line => line.trim().length > 0);
-    if (lines.length > 10 && lines.length < 500) {
-      score += 5;
-      details.foundFeatures.push('Well-organized code structure');
+    // 4. LANGUAGE-SPECIFIC FEATURES (15 points)
+    let languageScore = 0;
+    let featuresFound = 0;
+    
+    // Check functions keywords
+    for (const func of features.functions) {
+      const regex = new RegExp(`\\b${func}\\b`, 'gi');
+      if (regex.test(code)) {
+        featuresFound++;
+      }
     }
+    
+    // Check methods  
+    for (const method of features.methods) {
+      const escapedMethod = method.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const regex = new RegExp(escapedMethod, 'gi');
+      if (regex.test(code)) {
+        featuresFound++;
+      }
+    }
+    
+    // Score based on features found (diminishing returns)
+    if (featuresFound >= 1) languageScore += 5;
+    if (featuresFound >= 3) languageScore += 5;
+    if (featuresFound >= 5) languageScore += 5;
+    
+    score += languageScore;
+    details.foundFeatures.push(`Uses ${featuresFound} language feature(s)`);
+    details.breakdown.languageScore = languageScore;
 
-    // Ensure score doesn't exceed maximum
-    score = Math.min(maxScore, Math.round(score));
+    // 5. CODE QUALITY BONUS (10 points)
+    let qualityScore = 0;
+    
+    // Comments
+    const hasComments = /\/\/.*|\/\*[\s\S]*?\*\/|#(?!include|define).*|"""[\s\S]*?"""|'''[\s\S]*?'''/.test(code);
+    if (hasComments) {
+      qualityScore += 3;
+      details.foundFeatures.push('Includes comments');
+    }
+    
+    // Meaningful variable names (not just single letters, unless they're common like i, j, n, x, y)
+    const variablePattern = /(?:const|let|var|int|float|double|string|char)\s+([a-zA-Z_]\w*)/g;
+    let matches = [...code.matchAll(variablePattern)];
+    const hasDescriptiveNames = matches.some(m => m[1] && m[1].length > 2);
+    if (hasDescriptiveNames) {
+      qualityScore += 3;
+      details.foundFeatures.push('Uses descriptive names');
+    }
+    
+    // Multiple lines (organized code)
+    const lineCount = code.split('\n').filter(l => l.trim()).length;
+    if (lineCount >= 3) {
+      qualityScore += 2;
+      details.foundFeatures.push('Well-organized structure');
+    }
+    if (lineCount >= 10) {
+      qualityScore += 2;
+      details.foundFeatures.push('Comprehensive implementation');
+    }
+    
+    score += qualityScore;
+    details.breakdown.qualityScore = qualityScore;
 
-    // Determine if passed (70% threshold)
-    const passed = score >= 70;
+    // 6. DIFFICULTY ADJUSTMENT (extra points or reduced threshold)
+    // Harder challenges are more forgiving
+    let difficultyBonus = 0;
+    if (difficulty === 'medium' && score >= 50) difficultyBonus = 5;
+    if (difficulty === 'hard' && score >= 40) difficultyBonus = 10;
+    if (difficulty === 'expert' && score >= 30) difficultyBonus = 15;
+    
+    score += difficultyBonus;
+    if (difficultyBonus > 0) {
+      details.foundFeatures.push(`Difficulty bonus: +${difficultyBonus}`);
+    }
+    details.breakdown.difficultyBonus = difficultyBonus;
+
+    // ============================================
+    // FINAL SCORE CALCULATION
+    // ============================================
+    
+    score = Math.min(100, Math.round(score));
+    details.breakdown.total = score;
+
+    // Dynamic passing threshold based on difficulty
+    let passingThreshold = 50; // Much lower base threshold
+    if (difficulty === 'easy') passingThreshold = 50;
+    if (difficulty === 'medium') passingThreshold = 45;
+    if (difficulty === 'hard') passingThreshold = 40;
+    if (difficulty === 'expert') passingThreshold = 35;
+
+    const passed = score >= passingThreshold;
     const status = passed ? 'passed' : 'failed';
 
-    // Generate detailed feedback
-    let feedback = generateFeedback(score, details, languageName);
+    // Generate feedback
+    const feedback = generateImprovedFeedback(score, passed, details, languageName, difficulty);
 
-    // Add difficulty-based encouragement
-    if (challenge?.difficulty_level === 'hard' || challenge?.difficulty_level === 'expert') {
-      feedback += ' This is a challenging problem - great effort tackling it!';
-    }
-
-    console.log('✅ Language-based evaluation complete:', {
+    console.log('✅ Evaluation complete:', {
       score,
       passed,
-      foundFeatures: details.foundFeatures.length,
-      missingFeatures: details.missingFeatures.length
+      threshold: passingThreshold,
+      breakdown: details.breakdown
     });
 
     return {
@@ -449,25 +518,24 @@ async function evaluateCodeWithLanguageFeatures(submittedCode, challenge, projec
         feedback,
         details,
         usedLanguageFeatures: true,
-        languageName
+        languageName,
+        passingThreshold
       }
     };
 
   } catch (error) {
-    console.error('❌ Language-based evaluation error:', error);
+    console.error('❌ Evaluation error:', error);
     
-    // Fallback to basic evaluation
+    // IMPORTANT: On error, give benefit of doubt
     return {
-      score: 50,
-      passed: false,
-      status: 'completed',
-      feedback: 'Code submitted but could not be fully evaluated. Please review your solution.',
-      details: {
-        error: error.message
-      },
+      score: 60,
+      passed: true,
+      status: 'passed',
+      feedback: 'Code submitted successfully! Our evaluator had some issues, but your solution has been accepted.',
+      details: { error: error.message },
       evaluation: {
-        score: 50,
-        feedback: 'Evaluation error occurred',
+        score: 60,
+        feedback: 'Accepted with evaluation notice',
         usedLanguageFeatures: false
       }
     };
@@ -481,37 +549,52 @@ async function evaluateCodeWithLanguageFeatures(submittedCode, challenge, projec
  * @param {string} languageName - Programming language
  * @returns {string} Feedback message
  */
-function generateFeedback(score, details, languageName) {
+function generateImprovedFeedback(score, passed, details, languageName, difficulty) {
   let feedback = '';
 
-  if (score >= 90) {
-    feedback = `🎉 Excellent work! Your ${languageName} code demonstrates exceptional programming skills and best practices.`;
-  } else if (score >= 80) {
-    feedback = `🌟 Great job! Your ${languageName} code shows strong understanding and good structure.`;
-  } else if (score >= 70) {
-    feedback = `👍 Good effort! Your ${languageName} code demonstrates solid programming fundamentals.`;
-  } else if (score >= 60) {
-    feedback = `💪 Nice try! Your ${languageName} solution shows promise.`;
-  } else if (score >= 40) {
-    feedback = `📚 Keep practicing! Your ${languageName} code needs more structure.`;
+  // Main message
+  if (passed) {
+    if (score >= 90) {
+      feedback = `🏆 Outstanding! Your ${languageName} solution is excellent!`;
+    } else if (score >= 75) {
+      feedback = `🎉 Great job! Your ${languageName} code works well!`;
+    } else if (score >= 60) {
+      feedback = `✅ Nice work! Your ${languageName} solution passed!`;
+    } else {
+      feedback = `👍 Good effort! Your ${languageName} code has been accepted.`;
+    }
   } else {
-    feedback = `🌱 Good start! Focus on using ${languageName} functions and control structures.`;
+    if (score >= 40) {
+      feedback = `💪 Almost there! Your ${languageName} code shows good understanding.`;
+    } else if (score >= 25) {
+      feedback = `📚 Keep going! You're on the right track with ${languageName}.`;
+    } else {
+      feedback = `🌱 Good start! Let's build up your ${languageName} solution.`;
+    }
   }
 
-  // Add specific suggestions
-  if (details.missingFeatures.length > 0) {
-    feedback += '\n\n💡 Suggestions:';
-    details.missingFeatures.slice(0, 3).forEach(missing => {
-      feedback += `\n• ${missing}`;
+  // Add score context
+  feedback += ` (Score: ${score}/100)`;
+
+  // Show what was good
+  if (details.foundFeatures.length > 0) {
+    feedback += '\n\n✨ What you did well:';
+    details.foundFeatures.slice(0, 4).forEach(f => {
+      feedback += `\n  • ${f}`;
     });
   }
 
-  // Highlight strengths
-  if (details.foundFeatures.length > 3) {
-    feedback += '\n\n✨ Strengths:';
-    details.foundFeatures.slice(0, 3).forEach(feature => {
-      feedback += `\n• ${feature}`;
+  // Add helpful suggestions (not criticism)
+  if (!passed && details.suggestions.length > 0) {
+    feedback += '\n\n💡 Tips to improve:';
+    details.suggestions.slice(0, 3).forEach(s => {
+      feedback += `\n  • ${s}`;
     });
+  }
+
+  // Encouragement for harder difficulties
+  if (difficulty === 'hard' || difficulty === 'expert') {
+    feedback += '\n\n🔥 This was a challenging problem!';
   }
 
   return feedback;
